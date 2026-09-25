@@ -51,10 +51,12 @@ func SetupRouter(dispatcher *router.Dispatcher, adminHandler *controlplane.Admin
 	v1.Use(middleware.AuthMiddleware())
 	v1.Use(middleware.RateLimitMiddleware())
 	{
-		// OpenAI ingress (Chat completions + Text completions + Models + Embeddings + Rerank)
+		// OpenAI ingress (Chat completions + Text completions + Models + Embeddings + Rerank + Moderations)
 		v1.POST("/chat/completions", handler.HandleChatCompletions)
 		v1.POST("/completions", handler.HandleCompletions)
 		v1.GET("/models", handler.HandleModels)
+		v1.GET("/models/:model", handler.HandleModelDetail)
+		v1.POST("/moderations", handler.HandleModerations)
 		v1.POST("/embeddings", handler.HandleEmbeddings)
 		v1.POST("/rerank", handler.HandleRerank)
 
@@ -70,6 +72,14 @@ func SetupRouter(dispatcher *router.Dispatcher, adminHandler *controlplane.Admin
 		v1.POST("/audio/translations", mmHandler.HandleAudioTranslations)
 		v1.POST("/videos/generations", mmHandler.HandleVideoGenerations)
 		v1.GET("/videos/tasks/:id", mmHandler.HandleVideoTask)
+	}
+
+	// Google Gemini v1beta Ingress group
+	v1beta := r.Group("/v1beta")
+	{
+		v1beta.GET("/models", handler.HandleGeminiModels)
+		v1beta.GET("/models/*modelAction", handler.HandleGeminiModelDetail)
+		v1beta.POST("/models/*modelAction", handler.HandleGeminiAction)
 	}
 
 	return r

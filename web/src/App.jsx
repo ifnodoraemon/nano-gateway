@@ -31,7 +31,9 @@ import {
   History,
   Sliders,
   Code,
-  Search
+  Search,
+  Edit3,
+  Check
 } from 'lucide-react';
 
 export default function App() {
@@ -46,6 +48,8 @@ export default function App() {
 
   // Modals & Forms
   const [showChannelModal, setShowChannelModal] = useState(false);
+  const [editingChannelId, setEditingChannelId] = useState(null);
+  const [copiedKey, setCopiedKey] = useState('');
   const [newChannel, setNewChannel] = useState({
     name: '',
     type: 'openai',
@@ -53,6 +57,7 @@ export default function App() {
     api_key: '',
     priority: 1,
     weight: 10,
+    timeout_seconds: 60,
     models_str: '',
     mapping_str: '',
     protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'embeddings', 'rerank', 'images', 'audio_speech', 'audio_transcription', 'videos'],
@@ -374,7 +379,7 @@ export default function App() {
     });
   };
 
-  // Handle Channel/Provider Creation
+  // Handle Channel/Provider Creation & Editing
   const handleCreateChannel = async (e) => {
     e.preventDefault();
     const modelMapping = {};
@@ -396,12 +401,22 @@ export default function App() {
     delete payload.models_str;
     delete payload.mapping_str;
 
-    await fetch('/api/v1/admin/channels', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    if (editingChannelId) {
+      await fetch(`/api/v1/admin/channels/${editingChannelId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } else {
+      await fetch('/api/v1/admin/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
+
     setShowChannelModal(false);
+    setEditingChannelId(null);
     setProbeAlert(null);
     setNewChannel({
       name: '',
@@ -410,11 +425,35 @@ export default function App() {
       api_key: '',
       priority: 1,
       weight: 10,
+      timeout_seconds: 60,
       models_str: '',
       mapping_str: '',
       protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'embeddings', 'rerank', 'images', 'audio_speech', 'audio_transcription', 'videos'],
     });
     fetchData();
+  };
+
+  // Handle Channel Editing
+  const handleEditChannel = (ch) => {
+    setEditingChannelId(ch.id);
+    let mappingStr = '';
+    if (ch.model_mapping) {
+      mappingStr = Object.entries(ch.model_mapping).map(([k, v]) => `${k}:${v}`).join(',');
+    }
+    setNewChannel({
+      name: ch.name || '',
+      type: ch.type || 'openai',
+      base_url: ch.base_url || '',
+      api_key: ch.api_key || '',
+      priority: ch.priority || 1,
+      weight: ch.weight || 10,
+      timeout_seconds: ch.timeout_seconds || 60,
+      models_str: (ch.models || []).join(', '),
+      mapping_str: mappingStr,
+      protocols: ch.protocols || ['openai_chat', 'openai_text', 'anthropic_messages', 'embeddings', 'rerank', 'images', 'audio_speech', 'audio_transcription', 'videos'],
+    });
+    setProbeAlert(null);
+    setShowChannelModal(true);
   };
 
   // Handle Channel Deletion
@@ -465,7 +504,8 @@ export default function App() {
   // Copy text helper
   const copyToClipboard = (txt) => {
     navigator.clipboard.writeText(txt);
-    alert(`已复制到剪贴板！`);
+    setCopiedKey(txt);
+    setTimeout(() => setCopiedKey(''), 2500);
   };
 
   // 1. Chat Execution
@@ -1152,6 +1192,19 @@ export default function App() {
                 </div>
                 <button
                   onClick={() => {
+                    setEditingChannelId(null);
+                    setNewChannel({
+                      name: '',
+                      type: 'openai',
+                      base_url: '',
+                      api_key: '',
+                      priority: 1,
+                      weight: 10,
+                      timeout_seconds: 60,
+                      models_str: '',
+                      mapping_str: '',
+                      protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'embeddings', 'rerank', 'images', 'audio_speech', 'audio_transcription', 'videos'],
+                    });
                     setProbeAlert(null);
                     setShowChannelModal(true);
                   }}
@@ -1277,6 +1330,13 @@ export default function App() {
                             <span>Ping 测试</span>
                           </button>
                           <button
+                            onClick={() => handleEditChannel(ch)}
+                            className="text-xs px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 font-medium transition inline-flex items-center space-x-1"
+                          >
+                            <Edit3 className="w-3 h-3" />
+                            <span>编辑</span>
+                          </button>
+                          <button
                             onClick={() => handleDeleteChannel(ch.id)}
                             className="text-xs px-2.5 py-1.5 text-rose-600 hover:text-rose-800 transition font-medium"
                           >
@@ -1334,10 +1394,17 @@ export default function App() {
                           <span>{k.key}</span>
                           <button
                             onClick={() => copyToClipboard(k.key)}
-                            className="p-1 hover:bg-indigo-50 rounded text-slate-400 hover:text-indigo-600 transition"
+                            className="p-1 hover:bg-indigo-50 rounded text-slate-400 hover:text-indigo-600 transition flex items-center space-x-1"
                             title="复制 Key"
                           >
-                            <Copy className="w-3.5 h-3.5" />
+                            {copiedKey === k.key ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                <span className="text-[10px] text-emerald-600 font-medium">已复制</span>
+                              </>
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
                           </button>
                         </td>
                         <td className="py-4 px-6 text-slate-800 font-medium">{k.tenant_id}</td>
@@ -2761,7 +2828,7 @@ helm install nano-gateway ./helm/nano-gateway -n gateway --create-namespace
           <form onSubmit={handleCreateChannel} className="bg-white border border-slate-200 rounded-2xl p-6 max-w-xl w-full space-y-4 shadow-2xl animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
-                <h3 className="font-bold text-lg text-slate-900">新建模型提供商 (Provider)</h3>
+                <h3 className="font-bold text-lg text-slate-900">{editingChannelId ? '编辑模型提供商 (Provider)' : '新建模型提供商 (Provider)'}</h3>
                 <p className="text-xs text-slate-500">统一接入上游模型服务，支持一键智能探测与全模态协议映射</p>
               </div>
               <button
@@ -3058,7 +3125,7 @@ helm install nano-gateway ./helm/nano-gateway -n gateway --create-namespace
                 type="submit"
                 className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold shadow-sm transition"
               >
-                创建 Provider 并热加载
+                {editingChannelId ? '保存修改并热加载' : '创建 Provider 并热加载'}
               </button>
             </div>
           </form>

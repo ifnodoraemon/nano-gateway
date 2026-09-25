@@ -60,6 +60,7 @@ func main() {
 				APIKey:         ch.APIKey,
 				Models:         ch.Models,
 				ModelMapping:   ch.ModelMapping,
+				Protocols:      ch.Protocols,
 				Priority:       ch.Priority,
 				Weight:         ch.Weight,
 				TimeoutSeconds: ch.TimeoutSeconds,

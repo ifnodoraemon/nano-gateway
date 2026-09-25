@@ -28,6 +28,7 @@ type AnthropicInboundRequest struct {
 	Temperature *float64                  `json:"temperature,omitempty"`
 	TopP        *float64                  `json:"top_p,omitempty"`
 	Stream      bool                      `json:"stream,omitempty"`
+	Tools       []any                     `json:"tools,omitempty"`
 }
 
 // extractMessageContent extracts string text from an Anthropic message content field.
@@ -67,10 +68,83 @@ func ConvertAnthropicToCanonical(req *AnthropicInboundRequest) *model.ChatComple
 	}
 
 	for _, msg := range req.Messages {
-		canonicalMsgs = append(canonicalMsgs, model.ChatMessage{
-			Role:    msg.Role,
-			Content: extractMessageContent(msg.Content),
-		})
+		if blocks, ok := msg.Content.([]any); ok {
+			var textParts []string
+			var toolCalls []model.ToolCall
+			var hasToolResult bool
+
+			for _, b := range blocks {
+				if m, ok := b.(map[string]any); ok {
+					bType, _ := m["type"].(string)
+					switch bType {
+					case "text":
+						if t, ok := m["text"].(string); ok {
+							textParts = append(textParts, t)
+						}
+					case "tool_use":
+						id, _ := m["id"].(string)
+						name, _ := m["name"].(string)
+						inputBytes, _ := json.Marshal(m["input"])
+						toolCalls = append(toolCalls, model.ToolCall{
+							ID:   id,
+							Type: "function",
+							Function: model.FunctionCall{
+								Name:      name,
+								Arguments: string(inputBytes),
+							},
+						})
+					case "tool_result":
+						hasToolResult = true
+						toolID, _ := m["tool_use_id"].(string)
+						var contentStr string
+						if cs, ok := m["content"].(string); ok {
+							contentStr = cs
+						} else {
+							b, _ := json.Marshal(m["content"])
+							contentStr = string(b)
+						}
+						canonicalMsgs = append(canonicalMsgs, model.ChatMessage{
+							Role:       "tool",
+							ToolCallID: toolID,
+							Content:    contentStr,
+						})
+					}
+				}
+			}
+
+			if !hasToolResult {
+				canonicalMsgs = append(canonicalMsgs, model.ChatMessage{
+					Role:      msg.Role,
+					Content:   strings.Join(textParts, "\n"),
+					ToolCalls: toolCalls,
+				})
+			}
+		} else {
+			canonicalMsgs = append(canonicalMsgs, model.ChatMessage{
+				Role:    msg.Role,
+				Content: extractMessageContent(msg.Content),
+			})
+		}
+	}
+
+	var canonicalTools []model.Tool
+	for _, t := range req.Tools {
+		if tm, ok := t.(map[string]any); ok {
+			name, _ := tm["name"].(string)
+			desc, _ := tm["description"].(string)
+			schema := tm["input_schema"]
+			if schema == nil {
+				schema = map[string]any{"type": "object", "properties": map[string]any{}}
+			}
+			canonicalTools = append(canonicalTools, model.Tool{
+				Type: "function",
+				Function: map[string]any{
+					"name":        name,
+					"description": desc,
+					"parameters":  schema,
+				},
+			})
+		}
 	}
 
 	maxTokens := req.MaxTokens
@@ -85,6 +159,7 @@ func ConvertAnthropicToCanonical(req *AnthropicInboundRequest) *model.ChatComple
 		TopP:        req.TopP,
 		MaxTokens:   &maxTokens,
 		Stream:      req.Stream,
+		Tools:       canonicalTools,
 	}
 }
 
@@ -144,9 +219,35 @@ func (h *Handler) HandleAnthropicMessages(c *gin.Context) {
 			return
 		}
 
-		replyText := ""
+		var contentBlocks []gin.H
+		stopReason := "end_turn"
+
 		if len(resp.Choices) > 0 {
-			replyText = resp.Choices[0].Message.GetContentString()
+			choice := resp.Choices[0]
+			if replyText := choice.Message.GetContentString(); replyText != "" {
+				contentBlocks = append(contentBlocks, gin.H{
+					"type": "text",
+					"text": replyText,
+				})
+			}
+			for _, tc := range choice.Message.ToolCalls {
+				var parsedArgs any
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsedArgs); err != nil {
+					parsedArgs = map[string]any{}
+				}
+				contentBlocks = append(contentBlocks, gin.H{
+					"type":  "tool_use",
+					"id":    tc.ID,
+					"name":  tc.Function.Name,
+					"input": parsedArgs,
+				})
+			}
+
+			if len(choice.Message.ToolCalls) > 0 || (choice.FinishReason != nil && *choice.FinishReason == "tool_calls") {
+				stopReason = "tool_use"
+			} else if choice.FinishReason != nil && *choice.FinishReason == "length" {
+				stopReason = "max_tokens"
+			}
 		}
 
 		inputTokens := 0
@@ -157,17 +258,12 @@ func (h *Handler) HandleAnthropicMessages(c *gin.Context) {
 		}
 
 		anthropicResp := gin.H{
-			"id":    fmt.Sprintf("msg_%s", resp.ID),
-			"type":  "message",
-			"role":  "assistant",
-			"model": req.Model,
-			"content": []gin.H{
-				{
-					"type": "text",
-					"text": replyText,
-				},
-			},
-			"stop_reason": "end_turn",
+			"id":          fmt.Sprintf("msg_%s", resp.ID),
+			"type":        "message",
+			"role":        "assistant",
+			"model":       req.Model,
+			"content":     contentBlocks,
+			"stop_reason": stopReason,
 			"usage": gin.H{
 				"input_tokens":  inputTokens,
 				"output_tokens": outputTokens,
@@ -208,17 +304,21 @@ func (h *Handler) HandleAnthropicMessages(c *gin.Context) {
 	firstTokenRecorded := false
 	totalPromptTokens := 0
 	totalCompTokens := 0
+	currentBlockIndex := 0
+	textBlockOpened := true
+	toolBlockOpened := false
+	stopReason := "end_turn"
 
 	// 1. Emit event: message_start
 	startEvent := gin.H{
 		"type": "message_start",
 		"message": gin.H{
-			"id":           msgID,
-			"type":         "message",
-			"role":         "assistant",
-			"content":      []any{},
-			"model":        req.Model,
-			"stop_reason":  nil,
+			"id":            msgID,
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []any{},
+			"model":         req.Model,
+			"stop_reason":   nil,
 			"stop_sequence": nil,
 			"usage": gin.H{
 				"input_tokens":  totalPromptTokens,
@@ -250,14 +350,15 @@ func (h *Handler) HandleAnthropicMessages(c *gin.Context) {
 		case event, open := <-streamChan:
 			if !open {
 				// Stream finished
-				// Emit content_block_stop
-				fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+				if textBlockOpened || toolBlockOpened {
+					fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", currentBlockIndex)
+				}
 
 				// Emit message_delta
 				deltaEvent := gin.H{
 					"type": "message_delta",
 					"delta": gin.H{
-						"stop_reason":   "end_turn",
+						"stop_reason":   stopReason,
 						"stop_sequence": nil,
 					},
 					"usage": gin.H{
@@ -294,7 +395,17 @@ func (h *Handler) HandleAnthropicMessages(c *gin.Context) {
 			}
 
 			if event.Chunk != nil && len(event.Chunk.Choices) > 0 {
-				chunkDelta := event.Chunk.Choices[0].Delta
+				chunkChoice := event.Chunk.Choices[0]
+				chunkDelta := chunkChoice.Delta
+
+				if chunkChoice.FinishReason != nil {
+					if *chunkChoice.FinishReason == "tool_calls" {
+						stopReason = "tool_use"
+					} else if *chunkChoice.FinishReason == "length" {
+						stopReason = "max_tokens"
+					}
+				}
+
 				if chunkDelta.Content != "" {
 					if !firstTokenRecorded {
 						telemetry.GlobalMetrics.RecordTTFT(time.Since(start))
@@ -313,6 +424,51 @@ func (h *Handler) HandleAnthropicMessages(c *gin.Context) {
 					deltaBytes, _ := json.Marshal(blockDelta)
 					fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", deltaBytes)
 					flusher.Flush()
+				}
+
+				if len(chunkDelta.ToolCalls) > 0 {
+					for _, tc := range chunkDelta.ToolCalls {
+						if tc.ID != "" && tc.Function.Name != "" {
+							if textBlockOpened {
+								fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", currentBlockIndex)
+								textBlockOpened = false
+							}
+							if toolBlockOpened {
+								fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", currentBlockIndex)
+							}
+							currentBlockIndex++
+							toolBlockOpened = true
+							stopReason = "tool_use"
+
+							tbStart := gin.H{
+								"type":  "content_block_start",
+								"index": currentBlockIndex,
+								"content_block": gin.H{
+									"type": "tool_use",
+									"id":   tc.ID,
+									"name": tc.Function.Name,
+								},
+							}
+							tbBytes, _ := json.Marshal(tbStart)
+							fmt.Fprintf(w, "event: content_block_start\ndata: %s\n\n", tbBytes)
+							flusher.Flush()
+						}
+
+						if tc.Function.Arguments != "" {
+							stopReason = "tool_use"
+							argDelta := gin.H{
+								"type":  "content_block_delta",
+								"index": currentBlockIndex,
+								"delta": gin.H{
+									"type":         "input_json_delta",
+									"partial_json": tc.Function.Arguments,
+								},
+							}
+							argBytes, _ := json.Marshal(argDelta)
+							fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", argBytes)
+							flusher.Flush()
+						}
+					}
 				}
 
 				if event.Chunk.Usage != nil {

@@ -22,7 +22,8 @@ type Dispatcher struct {
 	mu             sync.RWMutex
 	channels       []model.ChannelConfig
 	providers      map[model.ProviderType]provider.Provider
-	rrIndices      map[string]int // round-robin index per model
+	wrrMu          sync.Mutex
+	wrrWeights     map[string]int // model:channel_name -> current_weight
 	circuitBreaker *CircuitBreaker
 }
 
@@ -31,7 +32,7 @@ func NewDispatcher(channels []model.ChannelConfig) *Dispatcher {
 	d := &Dispatcher{
 		channels:       channels,
 		providers:      make(map[model.ProviderType]provider.Provider),
-		rrIndices:      make(map[string]int),
+		wrrWeights:     make(map[string]int),
 		circuitBreaker: NewCircuitBreaker(3, 30*time.Second),
 	}
 
@@ -74,11 +75,10 @@ func (d *Dispatcher) GetChannelsForModel(modelName string) []*model.ChannelConfi
 	return d.GetChannelsForModelAndProtocol(modelName, "")
 }
 
-// GetChannelsForModelAndProtocol returns matching channels for a given model and protocol.
+// GetChannelsForModelAndProtocol returns matching channels for a given model and protocol,
+// grouped by priority tiers and balanced via Smooth Weighted Round-Robin (SWRR) within each tier.
 func (d *Dispatcher) GetChannelsForModelAndProtocol(modelName, proto string) []*model.ChannelConfig {
 	d.mu.RLock()
-	defer d.mu.RUnlock()
-
 	var matched []*model.ChannelConfig
 	for i := range d.channels {
 		ch := &d.channels[i]
@@ -89,16 +89,71 @@ func (d *Dispatcher) GetChannelsForModelAndProtocol(modelName, proto string) []*
 			matched = append(matched, ch)
 		}
 	}
+	d.mu.RUnlock()
 
-	// Sort by Priority ascending (1 is highest priority)
-	sort.SliceStable(matched, func(i, j int) bool {
-		if matched[i].Priority != matched[j].Priority {
-			return matched[i].Priority < matched[j].Priority
+	if len(matched) <= 1 {
+		return matched
+	}
+
+	// Group channels by Priority
+	priorityGroups := make(map[int][]*model.ChannelConfig)
+	var priorities []int
+	for _, ch := range matched {
+		p := ch.Priority
+		if len(priorityGroups[p]) == 0 {
+			priorities = append(priorities, p)
 		}
-		return matched[i].Weight > matched[j].Weight
-	})
+		priorityGroups[p] = append(priorityGroups[p], ch)
+	}
+	sort.Ints(priorities)
 
-	return matched
+	var result []*model.ChannelConfig
+	d.wrrMu.Lock()
+	defer d.wrrMu.Unlock()
+
+	for _, p := range priorities {
+		group := priorityGroups[p]
+		if len(group) == 1 {
+			result = append(result, group[0])
+			continue
+		}
+
+		// Smooth Weighted Round-Robin (SWRR) to balance within same priority tier
+		totalWeight := 0
+		maxWeight := -1 << 31
+		winnerIdx := 0
+
+		for i, ch := range group {
+			w := ch.Weight
+			if w <= 0 {
+				w = 1
+			}
+			totalWeight += w
+
+			key := modelName + ":" + ch.Name
+			cur := d.wrrWeights[key] + w
+			d.wrrWeights[key] = cur
+			if cur > maxWeight {
+				maxWeight = cur
+				winnerIdx = i
+			}
+		}
+
+		winnerKey := modelName + ":" + group[winnerIdx].Name
+		d.wrrWeights[winnerKey] -= totalWeight
+
+		// Winner is tried first
+		result = append(result, group[winnerIdx])
+
+		// Remaining channels in this tier serve as immediate fallbacks
+		for i, ch := range group {
+			if i != winnerIdx {
+				result = append(result, ch)
+			}
+		}
+	}
+
+	return result
 }
 
 // GetAllSupportedModels returns a deduplicated list of all configured models.

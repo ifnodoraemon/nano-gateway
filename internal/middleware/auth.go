@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	ContextKeyTenant     = "tenant_id"
-	ContextKeyVirtualKey = "virtual_key"
+	ContextKeyTenant           = "tenant_id"
+	ContextKeyVirtualKey       = "virtual_key"
+	ContextKeyVirtualKeyConfig = "virtual_key_config"
 )
 
 // AuthMiddleware authenticates incoming requests via Bearer API keys.
@@ -71,14 +72,15 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		// Save context info
 		c.Set(ContextKeyTenant, matchedKey.TenantID)
-		c.Set(ContextKeyVirtualKey, matchedKey)
+		c.Set(ContextKeyVirtualKey, matchedKey.Key)
+		c.Set(ContextKeyVirtualKeyConfig, matchedKey)
 		c.Next()
 	}
 }
 
 // ValidateModelAllowed checks if the requested model is permitted for this virtual key.
 func ValidateModelAllowed(c *gin.Context, requestedModel string) bool {
-	vkAny, exists := c.Get(ContextKeyVirtualKey)
+	vkAny, exists := c.Get(ContextKeyVirtualKeyConfig)
 	if !exists {
 		return true // open mode
 	}

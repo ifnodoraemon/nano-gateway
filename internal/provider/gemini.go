@@ -35,10 +35,32 @@ func (p *GeminiProvider) Type() model.ProviderType {
 	return model.ProviderGemini
 }
 
-// GeminiPart represents a single part of content (text or multimodal inlineData).
+type GeminiFunctionDeclaration struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  any    `json:"parameters,omitempty"`
+}
+
+type GeminiToolDeclarationContainer struct {
+	FunctionDeclarations []GeminiFunctionDeclaration `json:"functionDeclarations,omitempty"`
+}
+
+type GeminiFunctionCall struct {
+	Name string         `json:"name"`
+	Args map[string]any `json:"args,omitempty"`
+}
+
+type GeminiFunctionResponse struct {
+	Name     string         `json:"name"`
+	Response map[string]any `json:"response"`
+}
+
+// GeminiPart represents a single part of content (text, multimodal inlineData, or functionCall/functionResponse).
 type GeminiPart struct {
-	Text       string            `json:"text,omitempty"`
-	InlineData *GeminiInlineData `json:"inlineData,omitempty"`
+	Text             string                  `json:"text,omitempty"`
+	InlineData       *GeminiInlineData       `json:"inlineData,omitempty"`
+	FunctionCall     *GeminiFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *GeminiFunctionResponse `json:"functionResponse,omitempty"`
 }
 
 type GeminiInlineData struct {
@@ -73,10 +95,11 @@ type GeminiSafetySetting struct {
 
 // GeminiRequest represents the payload for Gemini generateContent.
 type GeminiRequest struct {
-	Contents          []GeminiContent          `json:"contents"`
-	SystemInstruction *GeminiSystemInstruction `json:"systemInstruction,omitempty"`
-	GenerationConfig  *GeminiGenerationConfig  `json:"generationConfig,omitempty"`
-	SafetySettings    []GeminiSafetySetting    `json:"safetySettings,omitempty"`
+	Contents          []GeminiContent                  `json:"contents"`
+	SystemInstruction *GeminiSystemInstruction         `json:"systemInstruction,omitempty"`
+	GenerationConfig  *GeminiGenerationConfig          `json:"generationConfig,omitempty"`
+	SafetySettings    []GeminiSafetySetting            `json:"safetySettings,omitempty"`
+	Tools             []GeminiToolDeclarationContainer `json:"tools,omitempty"`
 }
 
 // GeminiUsageMetadata reports token counts.
@@ -108,17 +131,59 @@ func convertOpenAIToGemini(req *model.ChatCompletionRequest) *GeminiRequest {
 	var systemParts []GeminiPart
 
 	for _, msg := range req.Messages {
-		parts := model.ParseMessageContent(msg.Content)
-		if len(parts) == 0 {
-			continue
-		}
-
 		if strings.ToLower(msg.Role) == "system" {
+			parts := model.ParseMessageContent(msg.Content)
 			for _, part := range parts {
 				if part.Text != "" {
 					systemParts = append(systemParts, GeminiPart{Text: part.Text})
 				}
 			}
+			continue
+		}
+
+		if strings.ToLower(msg.Role) == "tool" {
+			var respMap map[string]any
+			if err := json.Unmarshal([]byte(msg.GetContentString()), &respMap); err != nil {
+				respMap = map[string]any{"content": msg.GetContentString()}
+			}
+			contents = append(contents, GeminiContent{
+				Role: "user",
+				Parts: []GeminiPart{
+					{
+						FunctionResponse: &GeminiFunctionResponse{
+							Name:     msg.Name,
+							Response: respMap,
+						},
+					},
+				},
+			})
+			continue
+		}
+
+		if strings.ToLower(msg.Role) == "assistant" && len(msg.ToolCalls) > 0 {
+			var geminiParts []GeminiPart
+			if text := msg.GetContentString(); text != "" {
+				geminiParts = append(geminiParts, GeminiPart{Text: text})
+			}
+			for _, tc := range msg.ToolCalls {
+				var args map[string]any
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				geminiParts = append(geminiParts, GeminiPart{
+					FunctionCall: &GeminiFunctionCall{
+						Name: tc.Function.Name,
+						Args: args,
+					},
+				})
+			}
+			contents = append(contents, GeminiContent{
+				Role:  "model",
+				Parts: geminiParts,
+			})
+			continue
+		}
+
+		parts := model.ParseMessageContent(msg.Content)
+		if len(parts) == 0 {
 			continue
 		}
 
@@ -169,8 +234,29 @@ func convertOpenAIToGemini(req *model.ChatCompletionRequest) *GeminiRequest {
 		}
 	}
 
+	var toolContainers []GeminiToolDeclarationContainer
+	if len(req.Tools) > 0 {
+		var funcDecls []GeminiFunctionDeclaration
+		for _, t := range req.Tools {
+			fnName, _ := t.Function["name"].(string)
+			fnDesc, _ := t.Function["description"].(string)
+			fnParams := t.Function["parameters"]
+			funcDecls = append(funcDecls, GeminiFunctionDeclaration{
+				Name:        fnName,
+				Description: fnDesc,
+				Parameters:  fnParams,
+			})
+		}
+		if len(funcDecls) > 0 {
+			toolContainers = append(toolContainers, GeminiToolDeclarationContainer{
+				FunctionDeclarations: funcDecls,
+			})
+		}
+	}
+
 	geminiReq := &GeminiRequest{
 		Contents: contents,
+		Tools:    toolContainers,
 		GenerationConfig: &GeminiGenerationConfig{
 			Temperature:     req.Temperature,
 			TopP:            req.TopP,
@@ -253,14 +339,30 @@ func (p *GeminiProvider) ChatComplete(ctx context.Context, req *model.ChatComple
 
 	replyText := ""
 	finishReason := "stop"
+	var toolCalls []model.ToolCall
 	if len(geminiResp.Candidates) > 0 {
 		cand := geminiResp.Candidates[0]
 		var sb strings.Builder
 		for _, part := range cand.Content.Parts {
-			sb.WriteString(part.Text)
+			if part.Text != "" {
+				sb.WriteString(part.Text)
+			}
+			if part.FunctionCall != nil {
+				argsBytes, _ := json.Marshal(part.FunctionCall.Args)
+				toolCalls = append(toolCalls, model.ToolCall{
+					ID:   fmt.Sprintf("call_%d_%s", time.Now().UnixNano(), part.FunctionCall.Name),
+					Type: "function",
+					Function: model.FunctionCall{
+						Name:      part.FunctionCall.Name,
+						Arguments: string(argsBytes),
+					},
+				})
+			}
 		}
 		replyText = sb.String()
-		if cand.FinishReason == "MAX_TOKENS" {
+		if len(toolCalls) > 0 {
+			finishReason = "tool_calls"
+		} else if cand.FinishReason == "MAX_TOKENS" {
 			finishReason = "length"
 		}
 	}
@@ -283,8 +385,9 @@ func (p *GeminiProvider) ChatComplete(ctx context.Context, req *model.ChatComple
 			{
 				Index: 0,
 				Message: model.ChatMessage{
-					Role:    "assistant",
-					Content: replyText,
+					Role:      "assistant",
+					Content:   replyText,
+					ToolCalls: toolCalls,
 				},
 				FinishReason: &finishReason,
 			},
@@ -371,13 +474,30 @@ func (p *GeminiProvider) ChatCompleteStream(ctx context.Context, req *model.Chat
 			}
 
 			textDelta := ""
+			var toolCalls []model.ToolCall
 			var finishReason *string
 			if len(geminiChunk.Candidates) > 0 {
 				cand := geminiChunk.Candidates[0]
 				for _, part := range cand.Content.Parts {
-					textDelta += part.Text
+					if part.Text != "" {
+						textDelta += part.Text
+					}
+					if part.FunctionCall != nil {
+						argsBytes, _ := json.Marshal(part.FunctionCall.Args)
+						toolCalls = append(toolCalls, model.ToolCall{
+							ID:   fmt.Sprintf("call_%d_%s", time.Now().UnixNano(), part.FunctionCall.Name),
+							Type: "function",
+							Function: model.FunctionCall{
+								Name:      part.FunctionCall.Name,
+								Arguments: string(argsBytes),
+							},
+						})
+					}
 				}
-				if cand.FinishReason != "" {
+				if len(toolCalls) > 0 {
+					r := "tool_calls"
+					finishReason = &r
+				} else if cand.FinishReason != "" {
 					r := strings.ToLower(cand.FinishReason)
 					if r == "max_tokens" {
 						r = "length"
@@ -406,7 +526,8 @@ func (p *GeminiProvider) ChatCompleteStream(ctx context.Context, req *model.Chat
 					{
 						Index: 0,
 						Delta: model.ChunkDelta{
-							Content: textDelta,
+							Content:   textDelta,
+							ToolCalls: toolCalls,
 						},
 						FinishReason: finishReason,
 					},

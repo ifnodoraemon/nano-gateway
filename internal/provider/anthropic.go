@@ -35,6 +35,13 @@ func (p *AnthropicProvider) Type() model.ProviderType {
 	return model.ProviderAnthropic
 }
 
+// AnthropicTool represents a tool definition in Claude Messages API.
+type AnthropicTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	InputSchema any    `json:"input_schema"`
+}
+
 // AnthropicRequest represents the Anthropic Messages API payload.
 type AnthropicRequest struct {
 	Model       string             `json:"model"`
@@ -44,16 +51,20 @@ type AnthropicRequest struct {
 	Temperature *float64           `json:"temperature,omitempty"`
 	TopP        *float64           `json:"top_p,omitempty"`
 	Stream      bool               `json:"stream,omitempty"`
+	Tools       []AnthropicTool    `json:"tools,omitempty"`
 }
 
 type AnthropicMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"` // can be string or []any of content blocks
 }
 
 type AnthropicContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 type AnthropicUsage struct {
@@ -79,12 +90,81 @@ func convertOpenAIToAnthropic(req *model.ChatCompletionRequest, channel *model.C
 	for _, msg := range req.Messages {
 		if strings.ToLower(msg.Role) == "system" {
 			systemParts = append(systemParts, msg.GetContentString())
-		} else {
-			anthropicMsgs = append(anthropicMsgs, AnthropicMessage{
-				Role:    msg.Role,
-				Content: msg.GetContentString(),
-			})
+			continue
 		}
+
+		if strings.ToLower(msg.Role) == "tool" {
+			// Convert tool response to user role with tool_result block
+			toolResultBlock := map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": msg.ToolCallID,
+				"content":     msg.GetContentString(),
+			}
+			if len(anthropicMsgs) > 0 && anthropicMsgs[len(anthropicMsgs)-1].Role == "user" {
+				if blocks, ok := anthropicMsgs[len(anthropicMsgs)-1].Content.([]any); ok {
+					anthropicMsgs[len(anthropicMsgs)-1].Content = append(blocks, toolResultBlock)
+				} else {
+					anthropicMsgs[len(anthropicMsgs)-1].Content = []any{
+						map[string]any{"type": "text", "text": fmt.Sprint(anthropicMsgs[len(anthropicMsgs)-1].Content)},
+						toolResultBlock,
+					}
+				}
+			} else {
+				anthropicMsgs = append(anthropicMsgs, AnthropicMessage{
+					Role:    "user",
+					Content: []any{toolResultBlock},
+				})
+			}
+			continue
+		}
+
+		if strings.ToLower(msg.Role) == "assistant" && len(msg.ToolCalls) > 0 {
+			var blocks []any
+			contentStr := msg.GetContentString()
+			if contentStr != "" {
+				blocks = append(blocks, map[string]any{
+					"type": "text",
+					"text": contentStr,
+				})
+			}
+			for _, tc := range msg.ToolCalls {
+				var parsedInput any
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsedInput); err != nil {
+					parsedInput = map[string]any{}
+				}
+				blocks = append(blocks, map[string]any{
+					"type":  "tool_use",
+					"id":    tc.ID,
+					"name":  tc.Function.Name,
+					"input": parsedInput,
+				})
+			}
+			anthropicMsgs = append(anthropicMsgs, AnthropicMessage{
+				Role:    "assistant",
+				Content: blocks,
+			})
+			continue
+		}
+
+		anthropicMsgs = append(anthropicMsgs, AnthropicMessage{
+			Role:    msg.Role,
+			Content: msg.GetContentString(),
+		})
+	}
+
+	var tools []AnthropicTool
+	for _, t := range req.Tools {
+		fnName, _ := t.Function["name"].(string)
+		fnDesc, _ := t.Function["description"].(string)
+		fnParams := t.Function["parameters"]
+		if fnParams == nil {
+			fnParams = map[string]any{"type": "object", "properties": map[string]any{}}
+		}
+		tools = append(tools, AnthropicTool{
+			Name:        fnName,
+			Description: fnDesc,
+			InputSchema: fnParams,
+		})
 	}
 
 	maxTokens := 4096
@@ -100,6 +180,7 @@ func convertOpenAIToAnthropic(req *model.ChatCompletionRequest, channel *model.C
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
 		Stream:      req.Stream,
+		Tools:       tools,
 	}
 }
 
@@ -148,14 +229,26 @@ func (p *AnthropicProvider) ChatComplete(ctx context.Context, req *model.ChatCom
 	}
 
 	var fullContent strings.Builder
+	var toolCalls []model.ToolCall
 	for _, block := range anthropicResp.Content {
 		if block.Type == "text" {
 			fullContent.WriteString(block.Text)
+		} else if block.Type == "tool_use" {
+			toolCalls = append(toolCalls, model.ToolCall{
+				ID:   block.ID,
+				Type: "function",
+				Function: model.FunctionCall{
+					Name:      block.Name,
+					Arguments: string(block.Input),
+				},
+			})
 		}
 	}
 
 	finishReason := "stop"
-	if anthropicResp.StopReason == "max_tokens" {
+	if len(toolCalls) > 0 || anthropicResp.StopReason == "tool_use" {
+		finishReason = "tool_calls"
+	} else if anthropicResp.StopReason == "max_tokens" {
 		finishReason = "length"
 	}
 
@@ -168,8 +261,9 @@ func (p *AnthropicProvider) ChatComplete(ctx context.Context, req *model.ChatCom
 			{
 				Index: 0,
 				Message: model.ChatMessage{
-					Role:    "assistant",
-					Content: fullContent.String(),
+					Role:      "assistant",
+					Content:   fullContent.String(),
+					ToolCalls: toolCalls,
 				},
 				FinishReason: &finishReason,
 			},
@@ -296,6 +390,37 @@ func (p *AnthropicProvider) ChatCompleteStream(ctx context.Context, req *model.C
 					}
 					eventChan <- &model.StreamEvent{Chunk: chunk}
 
+				case "content_block_start":
+					if cb, ok := eventMap["content_block"].(map[string]any); ok {
+						if cb["type"] == "tool_use" {
+							toolID, _ := cb["id"].(string)
+							toolName, _ := cb["name"].(string)
+							chunk := &model.ChatCompletionChunk{
+								ID:      messageID,
+								Object:  "chat.completion.chunk",
+								Created: created,
+								Model:   req.Model,
+								Choices: []model.ChunkChoice{
+									{
+										Index: 0,
+										Delta: model.ChunkDelta{
+											ToolCalls: []model.ToolCall{
+												{
+													ID:   toolID,
+													Type: "function",
+													Function: model.FunctionCall{
+														Name: toolName,
+													},
+												},
+											},
+										},
+									},
+								},
+							}
+							eventChan <- &model.StreamEvent{Chunk: chunk}
+						}
+					}
+
 				case "content_block_delta":
 					if delta, ok := eventMap["delta"].(map[string]any); ok {
 						if text, ok := delta["text"].(string); ok && text != "" {
@@ -314,6 +439,29 @@ func (p *AnthropicProvider) ChatCompleteStream(ctx context.Context, req *model.C
 								},
 							}
 							eventChan <- &model.StreamEvent{Chunk: chunk}
+						} else if partial, ok := delta["partial_json"].(string); ok {
+							chunk := &model.ChatCompletionChunk{
+								ID:      messageID,
+								Object:  "chat.completion.chunk",
+								Created: created,
+								Model:   req.Model,
+								Choices: []model.ChunkChoice{
+									{
+										Index: 0,
+										Delta: model.ChunkDelta{
+											ToolCalls: []model.ToolCall{
+												{
+													Type: "function",
+													Function: model.FunctionCall{
+														Arguments: partial,
+													},
+												},
+											},
+										},
+									},
+								},
+							}
+							eventChan <- &model.StreamEvent{Chunk: chunk}
 						}
 					}
 
@@ -325,8 +473,12 @@ func (p *AnthropicProvider) ChatCompleteStream(ctx context.Context, req *model.C
 					}
 					stopReason := "stop"
 					if delta, ok := eventMap["delta"].(map[string]any); ok {
-						if r, ok := delta["stop_reason"].(string); ok && r == "max_tokens" {
-							stopReason = "length"
+						if r, ok := delta["stop_reason"].(string); ok {
+							if r == "max_tokens" {
+								stopReason = "length"
+							} else if r == "tool_use" {
+								stopReason = "tool_calls"
+							}
 						}
 					}
 
