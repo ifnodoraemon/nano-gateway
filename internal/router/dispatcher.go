@@ -1,9 +1,14 @@
 package router
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -291,4 +296,132 @@ func (d *Dispatcher) GetBreakerStatus(name string) string {
 	}
 	return d.circuitBreaker.GetStatus(name).String()
 }
+
+// =============================================================================
+// Unified Multimodal Forwarding Pipeline (Images, Audio, Video, Generic HTTP)
+// =============================================================================
+
+// UpstreamRequest represents a generic HTTP request across any modality.
+type UpstreamRequest struct {
+	Path        string            // e.g. "/v1/images/generations", "/v1/audio/speech"
+	Method      string            // "POST", "GET"
+	Headers     map[string]string // custom headers
+	Body        []byte            // serialized payload
+	ContentType string            // "application/json", "multipart/form-data"
+	Model       string            // requested model for routing
+	Protocol    string            // e.g. "images", "audio_speech", "videos"
+}
+
+// UpstreamResponse encapsulates a generic HTTP response across any modality.
+type UpstreamResponse struct {
+	StatusCode int
+	Headers    http.Header
+	Body       []byte
+	Stream     io.ReadCloser
+}
+
+// RewriteJSONModel cleanly updates the "model" field in a JSON payload.
+func RewriteJSONModel(body []byte, newModel string) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	var rawMap map[string]any
+	if err := json.Unmarshal(body, &rawMap); err != nil {
+		return body
+	}
+	rawMap["model"] = newModel
+	rewritten, err := json.Marshal(rawMap)
+	if err != nil {
+		return body
+	}
+	return rewritten
+}
+
+// DispatchHTTP routes an HTTP request across matching candidate channels with Circuit Breaking and Safe Fallback.
+func (d *Dispatcher) DispatchHTTP(ctx context.Context, req *UpstreamRequest) (*UpstreamResponse, error) {
+	channels := d.GetChannelsForModelAndProtocol(req.Model, req.Protocol)
+	if len(channels) == 0 {
+		channels = d.GetChannelsForModel(req.Model)
+	}
+	if len(channels) == 0 {
+		return nil, fmt.Errorf("no upstream provider available for model '%s' and protocol '%s'", req.Model, req.Protocol)
+	}
+
+	var lastErr error
+	for i, ch := range channels {
+		// Circuit Breaker: fail fast if upstream is down
+		if !d.circuitBreaker.CanExecute(ch.Name) {
+			telemetry.Logger.Warn("circuit breaker is OPEN, bypassing dead upstream", "channel", ch.Name)
+			continue
+		}
+
+		targetModel := ch.GetUpstreamModel(req.Model)
+		targetBody := req.Body
+		if strings.Contains(req.ContentType, "application/json") && len(targetBody) > 0 {
+			targetBody = RewriteJSONModel(targetBody, targetModel)
+		}
+
+		targetURL := strings.TrimRight(ch.BaseURL, "/") + req.Path
+		httpReq, err := http.NewRequestWithContext(ctx, req.Method, targetURL, bytes.NewReader(targetBody))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if req.ContentType != "" {
+			httpReq.Header.Set("Content-Type", req.ContentType)
+		}
+		if ch.APIKey != "" && ch.APIKey != "none" {
+			httpReq.Header.Set("Authorization", "Bearer "+ch.APIKey)
+			httpReq.Header.Set("x-api-key", ch.APIKey)
+		}
+		for k, v := range req.Headers {
+			httpReq.Header.Set(k, v)
+		}
+
+		start := time.Now()
+		httpResp, err := provider.SharedDefaultHTTPClient.Do(httpReq)
+		if err != nil {
+			d.circuitBreaker.RecordFailure(ch.Name)
+			lastErr = err
+			telemetry.GlobalMetrics.RecordFallback()
+			telemetry.Logger.Warn("upstream HTTP request failed, falling back",
+				"channel", ch.Name,
+				"error", err.Error(),
+				"attempt", i+1,
+			)
+			continue
+		}
+
+		// Check if response indicates server error or rate limit
+		if httpResp.StatusCode == http.StatusTooManyRequests || httpResp.StatusCode >= http.StatusInternalServerError {
+			d.circuitBreaker.RecordFailure(ch.Name)
+			bodyBytes, _ := io.ReadAll(httpResp.Body)
+			httpResp.Body.Close()
+			lastErr = fmt.Errorf("upstream %s returned status %d: %s", ch.Name, httpResp.StatusCode, string(bodyBytes))
+			telemetry.GlobalMetrics.RecordFallback()
+			telemetry.Logger.Warn("upstream returned server error, falling back",
+				"channel", ch.Name,
+				"status", httpResp.StatusCode,
+				"attempt", i+1,
+			)
+			continue
+		}
+
+		// Success! Mark circuit breaker healthy
+		d.circuitBreaker.RecordSuccess(ch.Name)
+		dur := time.Since(start)
+		telemetry.GlobalMetrics.RecordRequest(true, dur, 0, 0)
+
+		return &UpstreamResponse{
+			StatusCode: httpResp.StatusCode,
+			Headers:    httpResp.Header,
+			Stream:     httpResp.Body,
+		}, nil
+	}
+
+	telemetry.GlobalMetrics.RecordRequest(false, 0, 0, 0)
+	return nil, fmt.Errorf("all %d providers failed for model '%s'. Last error: %w", len(channels), req.Model, lastErr)
+}
+
 

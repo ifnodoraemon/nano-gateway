@@ -51,6 +51,18 @@ func (c *ChannelConfig) SupportsProtocol(proto string) bool {
 		if (p == "messages" || p == "anthropic_messages") && (proto == "messages" || proto == "anthropic_messages") {
 			return true
 		}
+		if (p == "images" || p == "image_generation") && (proto == "images" || proto == "image_generation") {
+			return true
+		}
+		if (p == "audio" || p == "audio_speech" || p == "tts") && (proto == "audio" || proto == "audio_speech" || proto == "tts") {
+			return true
+		}
+		if (p == "audio" || p == "audio_transcription" || p == "stt") && (proto == "audio" || proto == "audio_transcription" || proto == "stt") {
+			return true
+		}
+		if (p == "videos" || p == "video_generation") && (proto == "videos" || proto == "video_generation") {
+			return true
+		}
 	}
 	return false
 }

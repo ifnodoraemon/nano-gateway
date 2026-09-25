@@ -117,3 +117,77 @@ func ParseDataURI(uri string) (mimeType string, base64Data string) {
 	}
 	return "image/jpeg", uri
 }
+
+// =============================================================================
+// Image Generation & Editing Models
+// =============================================================================
+
+// ImageGenerationRequest represents an image generation prompt.
+type ImageGenerationRequest struct {
+	Prompt         string `json:"prompt"`
+	Model          string `json:"model"`
+	N              int    `json:"n,omitempty"`
+	Quality        string `json:"quality,omitempty"`
+	ResponseFormat string `json:"response_format,omitempty"` // url or b64_json
+	Size           string `json:"size,omitempty"`            // 1024x1024, 512x512, etc.
+	Style          string `json:"style,omitempty"`           // vivid or natural
+	User           string `json:"user,omitempty"`
+}
+
+// ImageItem holds the resulting image data.
+type ImageItem struct {
+	B64JSON       string `json:"b64_json,omitempty"`
+	URL           string `json:"url,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
+}
+
+// ImageGenerationResponse represents the response containing generated images.
+type ImageGenerationResponse struct {
+	Created int64       `json:"created"`
+	Data    []ImageItem `json:"data"`
+}
+
+// =============================================================================
+// Audio Speech (TTS) & Transcription (STT) Models
+// =============================================================================
+
+// AudioSpeechRequest represents a text-to-speech request.
+type AudioSpeechRequest struct {
+	Model          string  `json:"model"`
+	Input          string  `json:"input"`
+	Voice          string  `json:"voice"`
+	ResponseFormat string  `json:"response_format,omitempty"` // mp3, opus, aac, flac, wav, pcm
+	Speed          float64 `json:"speed,omitempty"`           // 0.25 to 4.0
+}
+
+// AudioTranscriptionResponse represents a speech-to-text response.
+type AudioTranscriptionResponse struct {
+	Text     string  `json:"text"`
+	Language string  `json:"language,omitempty"`
+	Duration float64 `json:"duration,omitempty"`
+}
+
+// =============================================================================
+// Video Generation Models
+// =============================================================================
+
+// VideoGenerationRequest represents a text-to-video or image-to-video request.
+type VideoGenerationRequest struct {
+	Prompt      string `json:"prompt"`
+	Model       string `json:"model"`
+	ImageURL    string `json:"image_url,omitempty"`
+	Duration    int    `json:"duration,omitempty"`     // duration in seconds
+	AspectRatio string `json:"aspect_ratio,omitempty"` // 16:9, 9:16, 1:1
+	Resolution  string `json:"resolution,omitempty"`   // 720p, 1080p
+}
+
+// VideoTaskResponse represents an asynchronous or synchronous video generation task.
+type VideoTaskResponse struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"` // pending, processing, succeeded, failed
+	Progress  int    `json:"progress,omitempty"`
+	VideoURL  string `json:"video_url,omitempty"`
+	Error     string `json:"error,omitempty"`
+	CreatedAt int64  `json:"created_at"`
+}
+

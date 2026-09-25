@@ -56,6 +56,14 @@ func SetupRouter(dispatcher *router.Dispatcher, adminHandler *controlplane.Admin
 
 		// Anthropic Claude Messages API ingress
 		v1.POST("/messages", handler.HandleAnthropicMessages)
+
+		// Multimodal Ingress (Image, Audio TTS/STT, Video)
+		mmHandler := NewMultimodalHandler(dispatcher)
+		v1.POST("/images/generations", mmHandler.HandleImageGenerations)
+		v1.POST("/audio/speech", mmHandler.HandleAudioSpeech)
+		v1.POST("/audio/transcriptions", mmHandler.HandleAudioTranscriptions)
+		v1.POST("/videos/generations", mmHandler.HandleVideoGenerations)
+		v1.GET("/videos/tasks/:id", mmHandler.HandleVideoTask)
 	}
 
 	return r
