@@ -21,6 +21,10 @@ data/*.db-shm
 .env
 *.local
 
+# Node & Frontend
+node_modules/
+web/node_modules/
+
 # IDE & OS
 .idea/
 .vscode/

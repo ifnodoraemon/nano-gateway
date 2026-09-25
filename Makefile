@@ -7,9 +7,13 @@ CONFIG = configs/config.yaml
 
 all: build
 
-build:
+build-web:
+	@echo "==> Building React Web UI..."
+	@cd web && npm run build
+
+build: build-web
 	@mkdir -p $(BIN_DIR)
-	@echo "==> Building $(APP_NAME)..."
+	@echo "==> Building $(APP_NAME) single binary..."
 	go build -o $(BIN_DIR)/$(APP_NAME) $(ENTRY)
 
 run:

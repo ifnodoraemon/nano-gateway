@@ -39,6 +39,9 @@ func NewDispatcher(channels []model.ChannelConfig) *Dispatcher {
 	anthropicProv := provider.NewAnthropicProvider(nil)
 	d.providers[model.ProviderAnthropic] = anthropicProv
 
+	geminiProv := provider.NewGeminiProvider(nil)
+	d.providers[model.ProviderGemini] = geminiProv
+
 	return d
 }
 

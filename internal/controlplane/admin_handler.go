@@ -153,9 +153,12 @@ func (h *AdminHandler) TestChannel(c *gin.Context) {
 	}
 
 	var prov provider.Provider
-	if target.Type == model.ProviderAnthropic {
+	switch target.Type {
+	case model.ProviderAnthropic:
 		prov = provider.NewAnthropicProvider(nil)
-	} else {
+	case model.ProviderGemini:
+		prov = provider.NewGeminiProvider(nil)
+	default:
 		prov = provider.NewOpenAIProvider(nil)
 	}
 
