@@ -1,0 +1,29 @@
+.PHONY: all build run test tidy clean
+
+APP_NAME = nano-gateway
+BIN_DIR = bin
+ENTRY = cmd/gateway/main.go
+CONFIG = configs/config.yaml
+
+all: build
+
+build:
+	@mkdir -p $(BIN_DIR)
+	@echo "==> Building $(APP_NAME)..."
+	go build -o $(BIN_DIR)/$(APP_NAME) $(ENTRY)
+
+run:
+	@echo "==> Running $(APP_NAME)..."
+	go run $(ENTRY) -config $(CONFIG)
+
+test:
+	@echo "==> Running tests..."
+	go test -v -race ./...
+
+tidy:
+	@echo "==> Tidying dependencies..."
+	go mod tidy
+
+clean:
+	@rm -rf $(BIN_DIR)
+	@echo "==> Cleaned."

@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nano-Gateway 运营控制台</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    [v-cloak] { display: none; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  <div id="app" v-cloak class="flex min-h-screen">
+    <!-- Sidebar -->
+    <aside class="w-64 bg-slate-950 border-r border-slate-800 flex flex-col">
+      <div class="p-6 border-b border-slate-800 flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+          <i class="fa-solid fa-bolt text-white text-lg"></i>
+        </div>
+        <div>
+          <h1 class="font-bold text-lg text-white tracking-wide">Nano-Gateway</h1>
+          <span class="text-xs text-indigo-400 font-mono">v0.1.0 High-Perf</span>
+        </div>
+      </div>
+
+      <nav class="flex-1 p-4 space-y-1.5">
+        <button @click="currentTab = 'dashboard'" :class="currentTab === 'dashboard' ? 'bg-indigo-600/20 text-indigo-400 border-indigo-500/50' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 border-transparent'" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl border text-sm font-medium transition-all">
+          <i class="fa-solid fa-chart-pie w-5 text-center"></i>
+          <span>系统概览</span>
+        </button>
+
+        <button @click="currentTab = 'channels'" :class="currentTab === 'channels' ? 'bg-indigo-600/20 text-indigo-400 border-indigo-500/50' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 border-transparent'" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl border text-sm font-medium transition-all">
+          <i class="fa-solid fa-server w-5 text-center"></i>
+          <span>渠道管理</span>
+        </button>
+
+        <button @click="currentTab = 'keys'" :class="currentTab === 'keys' ? 'bg-indigo-600/20 text-indigo-400 border-indigo-500/50' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 border-transparent'" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl border text-sm font-medium transition-all">
+          <i class="fa-solid fa-key w-5 text-center"></i>
+          <span>虚拟密钥 (Keys)</span>
+        </button>
+
+        <button @click="currentTab = 'playground'" :class="currentTab === 'playground' ? 'bg-indigo-600/20 text-indigo-400 border-indigo-500/50' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 border-transparent'" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl border text-sm font-medium transition-all">
+          <i class="fa-solid fa-terminal w-5 text-center"></i>
+          <span>在线调试台</span>
+        </button>
+      </nav>
+
+      <div class="p-4 border-t border-slate-800 text-xs text-slate-500 text-center">
+        Zero-DB Hot Path · Safe Fallback
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="flex-1 flex flex-col min-w-0 overflow-y-auto">
+      <!-- Top header -->
+      <header class="h-16 bg-slate-950/60 backdrop-blur border-b border-slate-800 flex items-center justify-between px-8 sticky top-0 z-10">
+        <h2 class="text-lg font-semibold text-white">
+          {{ tabTitle }}
+        </h2>
+        <div class="flex items-center space-x-4">
+          <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse"></span>
+            数据面就绪 (Data Plane Healthy)
+          </span>
+          <a href="/metrics" target="_blank" class="text-xs text-slate-400 hover:text-indigo-400 flex items-center space-x-1">
+            <i class="fa-solid fa-chart-line"></i>
+            <span>Prometheus</span>
+          </a>
+        </div>
+      </header>
+
+      <div class="p-8 max-w-7xl w-full mx-auto space-y-6">
+        <!-- 1. DASHBOARD TAB -->
+        <div v-if="currentTab === 'dashboard'" class="space-y-6">
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-5">
+            <div class="bg-slate-950 border border-slate-800 rounded-2xl p-6 shadow-sm">
+              <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">总请求数</span>
+              <div class="mt-2 flex items-baseline justify-between">
+                <span class="text-3xl font-bold text-white">{{ stats.total_requests || 0 }}</span>
+                <i class="fa-solid fa-arrow-trend-up text-indigo-400"></i>
+              </div>
+            </div>
+
+            <div class="bg-slate-950 border border-slate-800 rounded-2xl p-6 shadow-sm">
+              <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">活跃渠道数</span>
+              <div class="mt-2 flex items-baseline justify-between">
+                <span class="text-3xl font-bold text-emerald-400">{{ channels.length || 0 }}</span>
+                <i class="fa-solid fa-network-wired text-emerald-400"></i>
+              </div>
+            </div>
+
+            <div class="bg-slate-950 border border-slate-800 rounded-2xl p-6 shadow-sm">
+              <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">总 Token 消耗</span>
+              <div class="mt-2 flex items-baseline justify-between">
+                <span class="text-3xl font-bold text-cyan-400">{{ stats.total_tokens || 0 }}</span>
+                <i class="fa-solid fa-coins text-cyan-400"></i>
+              </div>
+            </div>
+
+            <div class="bg-slate-950 border border-slate-800 rounded-2xl p-6 shadow-sm">
+              <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">平均首字耗时 (TTFT)</span>
+              <div class="mt-2 flex items-baseline justify-between">
+                <span class="text-3xl font-bold text-amber-400">{{ (stats.avg_ttft_ms || 0).toFixed(1) }} <span class="text-sm text-slate-500 font-normal">ms</span></span>
+                <i class="fa-solid fa-gauge-high text-amber-400"></i>
+              </div>
+            </div>
+          </div>
+
+          <!-- Feature Cards -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-slate-950 border border-slate-800 rounded-2xl p-6">
+              <h3 class="font-semibold text-white mb-3 flex items-center space-x-2">
+                <i class="fa-solid fa-shield-halved text-indigo-400"></i>
+                <span>首字前无感容灾 (Safe Fallback Window)</span>
+              </h3>
+              <p class="text-sm text-slate-400 leading-relaxed">
+                数据面在上游建立流式长连接时，若首个有效分块产生前遭遇 429、500 或连接超时，系统自动捕获并在毫秒内重试优先级队列中的下一个备份渠道。业务端完全无感。
+              </p>
+            </div>
+
+            <div class="bg-slate-950 border border-slate-800 rounded-2xl p-6">
+              <h3 class="font-semibold text-white mb-3 flex items-center space-x-2">
+                <i class="fa-solid fa-bolt text-cyan-400"></i>
+                <span>零数据库查询热路径 (Zero-DB Hot Path)</span>
+              </h3>
+              <p class="text-sm text-slate-400 leading-relaxed">
+                所有通道与虚拟 Key 规则均在控制面持久化到 SQLite，并原子同步至数据面内存哈希结构。万级并发 SSE 代理请求热路径不触发任何 SQL 查询。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. CHANNELS TAB -->
+        <div v-if="currentTab === 'channels'" class="space-y-6">
+          <div class="flex justify-between items-center">
+            <p class="text-sm text-slate-400">管理下游模型服务商接口，配置优先级容灾降级与模型别名。</p>
+            <button @click="showAddChannelModal = true" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-medium shadow-md shadow-indigo-600/30 flex items-center space-x-2 transition">
+              <i class="fa-solid fa-plus"></i>
+              <span>新建渠道</span>
+            </button>
+          </div>
+
+          <div class="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="border-b border-slate-800 text-slate-400 text-xs uppercase bg-slate-900/50">
+                  <th class="py-3.5 px-6">渠道名称</th>
+                  <th class="py-3.5 px-6">类型</th>
+                  <th class="py-3.5 px-6">基础地址 (Base URL)</th>
+                  <th class="py-3.5 px-6">支持模型</th>
+                  <th class="py-3.5 px-6">优先级 / 权重</th>
+                  <th class="py-3.5 px-6 text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800 text-sm">
+                <tr v-for="ch in channels" :key="ch.id" class="hover:bg-slate-900/40 transition">
+                  <td class="py-4 px-6 font-medium text-white flex items-center space-x-2">
+                    <span class="w-2 h-2 rounded-full" :class="ch.status === 'active' ? 'bg-emerald-400' : 'bg-slate-600'"></span>
+                    <span>{{ ch.name }}</span>
+                  </td>
+                  <td class="py-4 px-6">
+                    <span class="px-2.5 py-1 rounded-md text-xs font-mono font-medium" :class="ch.type === 'anthropic' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'">
+                      {{ ch.type }}
+                    </span>
+                  </td>
+                  <td class="py-4 px-6 text-slate-300 font-mono text-xs truncate max-w-xs">{{ ch.base_url }}</td>
+                  <td class="py-4 px-6">
+                    <div class="flex flex-wrap gap-1">
+                      <span v-for="m in (ch.models || [])" :key="m" class="px-2 py-0.5 rounded bg-slate-800 text-xs text-slate-300">{{ m }}</span>
+                    </div>
+                  </td>
+                  <td class="py-4 px-6 text-slate-300">
+                    <span class="text-xs px-2 py-0.5 rounded bg-slate-800 font-mono">P:{{ ch.priority }}</span>
+                    <span class="text-xs px-2 py-0.5 rounded bg-slate-800 font-mono ml-1">W:{{ ch.weight }}</span>
+                  </td>
+                  <td class="py-4 px-6 text-right space-x-3">
+                    <button @click="testChannel(ch)" :disabled="testingId === ch.id" class="text-xs px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 border border-indigo-500/30 transition">
+                      <i v-if="testingId === ch.id" class="fa-solid fa-spinner fa-spin mr-1"></i>
+                      <i v-else class="fa-solid fa-play mr-1"></i>
+                      <span>连通性测试</span>
+                    </button>
+                    <button @click="deleteChannel(ch.id)" class="text-xs text-rose-400 hover:text-rose-300 transition">删除</button>
+                  </td>
+                </tr>
+                <tr v-if="channels.length === 0">
+                  <td colspan="6" class="py-12 text-center text-slate-500">暂无配置渠道，点击右上角新建</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 3. KEYS TAB -->
+        <div v-if="currentTab === 'keys'" class="space-y-6">
+          <div class="flex justify-between items-center">
+            <p class="text-sm text-slate-400">分发虚拟 API 密钥给不同租户/应用，提供 RPM/TPM 令牌桶限流与模型白名单。</p>
+            <button @click="showAddKeyModal = true" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-medium shadow-md shadow-indigo-600/30 flex items-center space-x-2 transition">
+              <i class="fa-solid fa-plus"></i>
+              <span>创建虚拟 Key</span>
+            </button>
+          </div>
+
+          <div class="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="border-b border-slate-800 text-slate-400 text-xs uppercase bg-slate-900/50">
+                  <th class="py-3.5 px-6">虚拟 Key (Token)</th>
+                  <th class="py-3.5 px-6">租户 ID</th>
+                  <th class="py-3.5 px-6">RPM 限制</th>
+                  <th class="py-3.5 px-6">模型白名单</th>
+                  <th class="py-3.5 px-6">状态</th>
+                  <th class="py-3.5 px-6 text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800 text-sm">
+                <tr v-for="k in keys" :key="k.id" class="hover:bg-slate-900/40 transition">
+                  <td class="py-4 px-6 font-mono text-xs text-indigo-300 flex items-center space-x-2">
+                    <span>{{ k.key }}</span>
+                    <button @click="copyText(k.key)" class="text-slate-500 hover:text-slate-300 ml-2" title="复制">
+                      <i class="fa-regular fa-copy"></i>
+                    </button>
+                  </td>
+                  <td class="py-4 px-6 text-slate-300">{{ k.tenant_id }}</td>
+                  <td class="py-4 px-6 text-slate-300 font-mono text-xs">{{ k.rpm || '不限' }} req/min</td>
+                  <td class="py-4 px-6">
+                    <span v-if="!k.allowed_models || k.allowed_models.length === 0" class="text-xs text-emerald-400">全部允许</span>
+                    <span v-else class="text-xs text-slate-300">{{ k.allowed_models.join(', ') }}</span>
+                  </td>
+                  <td class="py-4 px-6">
+                    <span class="px-2 py-0.5 rounded text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Active</span>
+                  </td>
+                  <td class="py-4 px-6 text-right">
+                    <button @click="deleteKey(k.id)" class="text-xs text-rose-400 hover:text-rose-300 transition">删除</button>
+                  </td>
+                </tr>
+                <tr v-if="keys.length === 0">
+                  <td colspan="6" class="py-12 text-center text-slate-500">暂无虚拟 Key，点击右上角创建</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 4. PLAYGROUND TAB -->
+        <div v-if="currentTab === 'playground'" class="space-y-6">
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Left panel: Settings -->
+            <div class="bg-slate-950 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h3 class="font-semibold text-white">模型与请求参数</h3>
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">选择模型</label>
+                <select v-model="playModel" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                  <option v-for="m in allModels" :key="m" :value="m">{{ m }}</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">虚拟 API Key (可选)</label>
+                <input v-model="playApiKey" placeholder="sk-gw-xxxx" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+              </div>
+
+              <div class="flex items-center space-x-2 pt-2">
+                <input type="checkbox" id="streamToggle" v-model="playStream" class="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0">
+                <label for="streamToggle" class="text-sm text-slate-300">开启 SSE 流式输出 (Streaming)</label>
+              </div>
+
+              <div class="pt-4 border-t border-slate-800 text-xs text-slate-400 space-y-2">
+                <div class="flex justify-between">
+                  <span>总响应延迟:</span>
+                  <span class="font-mono text-indigo-400">{{ playDurationMs ? playDurationMs + ' ms' : '-' }}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span>首字延迟 (TTFT):</span>
+                  <span class="font-mono text-amber-400">{{ playTTFTMs ? playTTFTMs + ' ms' : '-' }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right panel: Interactive Chat -->
+            <div class="lg:col-span-2 bg-slate-950 border border-slate-800 rounded-2xl p-6 flex flex-col h-[600px]">
+              <div class="flex-1 overflow-y-auto space-y-4 p-2 font-mono text-sm border-b border-slate-800">
+                <div v-if="playOutput" class="text-slate-200 whitespace-pre-wrap leading-relaxed">
+                  {{ playOutput }}
+                </div>
+                <div v-else class="text-slate-600 text-center py-24 font-sans">
+                  在下方输入提示词，点击发送测试网关代理转发
+                </div>
+              </div>
+
+              <div class="pt-4 flex space-x-3">
+                <textarea v-model="playPrompt" @keydown.enter.ctrl="sendChat" rows="2" placeholder="输入测试提示词... (Ctrl+Enter 发送)" class="flex-1 bg-slate-900 border border-slate-800 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+                <button @click="sendChat" :disabled="playLoading" class="px-6 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl font-medium flex items-center justify-center space-x-2 transition shadow-md shadow-indigo-600/30">
+                  <i v-if="playLoading" class="fa-solid fa-spinner fa-spin"></i>
+                  <i v-else class="fa-solid fa-paper-plane"></i>
+                  <span>发送</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Modal: Add Channel -->
+    <div v-if="showAddChannelModal" class="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
+      <div class="bg-slate-950 border border-slate-800 rounded-2xl p-6 max-w-lg w-full space-y-4 shadow-xl">
+        <h3 class="font-semibold text-lg text-white">新建上游渠道</h3>
+        
+        <div class="space-y-3 text-sm">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">渠道名称</label>
+            <input v-model="newChannel.name" placeholder="例如: deepseek-primary" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">类型</label>
+              <select v-model="newChannel.type" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+                <option value="openai">openai</option>
+                <option value="anthropic">anthropic</option>
+                <option value="vllm">vllm</option>
+                <option value="sglang">sglang</option>
+                <option value="ollama">ollama</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">优先级 (数字越小优先级越高)</label>
+              <input v-model.number="newChannel.priority" type="number" value="1" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Base URL</label>
+            <input v-model="newChannel.base_url" placeholder="https://api.deepseek.com/v1" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">API Key</label>
+            <input v-model="newChannel.api_key" type="password" placeholder="sk-..." class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">支持模型列表 (逗号分隔)</label>
+            <input v-model="newChannel.models_str" placeholder="deepseek-chat, deepseek-reasoner" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+          </div>
+        </div>
+
+        <div class="flex justify-end space-x-3 pt-4 border-t border-slate-800">
+          <button @click="showAddChannelModal = false" class="px-4 py-2 rounded-xl text-sm text-slate-400 hover:text-white">取消</button>
+          <button @click="createChannel" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-medium">创建并热重载</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Add Key -->
+    <div v-if="showAddKeyModal" class="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
+      <div class="bg-slate-950 border border-slate-800 rounded-2xl p-6 max-w-md w-full space-y-4 shadow-xl">
+        <h3 class="font-semibold text-lg text-white">签发虚拟 Key</h3>
+        
+        <div class="space-y-3 text-sm">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">租户 ID / 应用名称</label>
+            <input v-model="newKey.tenant_id" placeholder="例如: agent-finance-team" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">自定义 Key (留空自动生成)</label>
+            <input v-model="newKey.key" placeholder="sk-gw-xxxx" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">RPM 限制 (每分钟请求数)</label>
+            <input v-model.number="newKey.rpm" type="number" placeholder="60" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+          </div>
+        </div>
+
+        <div class="flex justify-end space-x-3 pt-4 border-t border-slate-800">
+          <button @click="showAddKeyModal = false" class="px-4 py-2 rounded-xl text-sm text-slate-400 hover:text-white">取消</button>
+          <button @click="createKey" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-medium">生成 Key</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const { createApp, ref, computed, onMounted } = Vue;
+
+    createApp({
+      setup() {
+        const currentTab = ref('dashboard');
+        const channels = ref([]);
+        const keys = ref([]);
+        const stats = ref({});
+        const allModels = ref([]);
+
+        const showAddChannelModal = ref(false);
+        const newChannel = ref({
+          name: '',
+          type: 'openai',
+          base_url: '',
+          api_key: '',
+          priority: 1,
+          weight: 10,
+          models_str: ''
+        });
+
+        const showAddKeyModal = ref(false);
+        const newKey = ref({
+          tenant_id: '',
+          key: '',
+          rpm: 60
+        });
+
+        const testingId = ref(null);
+
+        // Playground
+        const playModel = ref('gpt-4o');
+        const playApiKey = ref('');
+        const playStream = ref(true);
+        const playPrompt = ref('请用一句话介绍你自己和你的技术架构。');
+        const playOutput = ref('');
+        const playLoading = ref(false);
+        const playDurationMs = ref(0);
+        const playTTFTMs = ref(0);
+
+        const tabTitle = computed(() => {
+          switch(currentTab.value) {
+            case 'dashboard': return '系统运行指标大盘';
+            case 'channels': return '下游渠道与路由管理';
+            case 'keys': return '虚拟 Key 与租户配额';
+            case 'playground': return '模型调用调试台';
+            default: return '';
+          }
+        });
+
+        const loadData = async () => {
+          try {
+            const chRes = await fetch('/api/v1/admin/channels');
+            const chData = await chRes.json();
+            if (chData.code === 0) channels.value = chData.data || [];
+
+            const keyRes = await fetch('/api/v1/admin/keys');
+            const keyData = await keyRes.json();
+            if (keyData.code === 0) keys.value = keyData.data || [];
+
+            const statsRes = await fetch('/api/v1/admin/stats/overview');
+            const statsData = await statsRes.json();
+            if (statsData.code === 0) stats.value = statsData.data || {};
+
+            const mRes = await fetch('/api/v1/admin/models');
+            const mData = await mRes.json();
+            if (mData.code === 0) {
+              allModels.value = mData.data || [];
+              if (allModels.value.length > 0 && !allModels.value.includes(playModel.value)) {
+                playModel.value = allModels.value[0];
+              }
+            }
+          } catch (e) {
+            console.error('load data failed', e);
+          }
+        };
+
+        const createChannel = async () => {
+          const payload = {
+            ...newChannel.value,
+            models: newChannel.value.models_str.split(',').map(s => s.trim()).filter(Boolean)
+          };
+          delete payload.models_str;
+
+          await fetch('/api/v1/admin/channels', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          showAddChannelModal.value = false;
+          await loadData();
+        };
+
+        const deleteChannel = async (id) => {
+          if (!confirm('确认删除该渠道吗？')) return;
+          await fetch(`/api/v1/admin/channels/${id}`, { method: 'DELETE' });
+          await loadData();
+        };
+
+        const testChannel = async (ch) => {
+          testingId.value = ch.id;
+          try {
+            const res = await fetch(`/api/v1/admin/channels/${ch.id}/test`, { method: 'POST' });
+            const data = await res.json();
+            if (data.code === 0) {
+              alert(`渠道连通性正常！耗时: ${data.latency_ms}ms\n响应样例: ${data.response}`);
+            } else {
+              alert(`连通失败: ${data.error}`);
+            }
+          } catch (e) {
+            alert('请求异常: ' + e.message);
+          } finally {
+            testingId.value = null;
+          }
+        };
+
+        const createKey = async () => {
+          await fetch('/api/v1/admin/keys', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newKey.value)
+          });
+          showAddKeyModal.value = false;
+          await loadData();
+        };
+
+        const deleteKey = async (id) => {
+          if (!confirm('确认删除该虚拟 Key 吗？')) return;
+          await fetch(`/api/v1/admin/keys/${id}`, { method: 'DELETE' });
+          await loadData();
+        };
+
+        const copyText = (txt) => {
+          navigator.clipboard.writeText(txt);
+          alert('已复制到剪贴板: ' + txt);
+        };
+
+        const sendChat = async () => {
+          if (!playPrompt.value.trim()) return;
+          playLoading.value = true;
+          playOutput.value = '';
+          playDurationMs.value = 0;
+          playTTFTMs.value = 0;
+
+          const start = Date.now();
+          let firstTokenTime = null;
+
+          const headers = { 'Content-Type': 'application/json' };
+          if (playApiKey.value) {
+            headers['Authorization'] = 'Bearer ' + playApiKey.value;
+          }
+
+          const body = {
+            model: playModel.value,
+            messages: [{ role: 'user', content: playPrompt.value }],
+            stream: playStream.value
+          };
+
+          try {
+            const res = await fetch('/v1/chat/completions', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(body)
+            });
+
+            if (!res.ok) {
+              const err = await res.json();
+              playOutput.value = 'Error: ' + JSON.stringify(err, null, 2);
+              return;
+            }
+
+            if (!playStream.value) {
+              const data = await res.json();
+              playDurationMs.value = Date.now() - start;
+              playOutput.value = data.choices[0].message.content;
+            } else {
+              const reader = res.body.getReader();
+              const decoder = new TextDecoder();
+              let buffer = '';
+
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                  const trimmed = line.trim();
+                  if (!trimmed.startsWith('data:')) continue;
+                  const dataContent = trimmed.substring(5).trim();
+                  if (dataContent === '[DONE]') continue;
+
+                  try {
+                    const chunk = JSON.parse(dataContent);
+                    if (chunk.choices && chunk.choices[0].delta && chunk.choices[0].delta.content) {
+                      if (!firstTokenTime) {
+                        firstTokenTime = Date.now();
+                        playTTFTMs.value = firstTokenTime - start;
+                      }
+                      playOutput.value += chunk.choices[0].delta.content;
+                    }
+                  } catch (e) {}
+                }
+              }
+              playDurationMs.value = Date.now() - start;
+            }
+          } catch (e) {
+            playOutput.value = 'Request Exception: ' + e.message;
+          } finally {
+            playLoading.value = false;
+          }
+        };
+
+        onMounted(() => {
+          loadData();
+        });
+
+        return {
+          currentTab,
+          tabTitle,
+          channels,
+          keys,
+          stats,
+          allModels,
+          showAddChannelModal,
+          newChannel,
+          showAddKeyModal,
+          newKey,
+          testingId,
+          playModel,
+          playApiKey,
+          playStream,
+          playPrompt,
+          playOutput,
+          playLoading,
+          playDurationMs,
+          playTTFTMs,
+          createChannel,
+          deleteChannel,
+          testChannel,
+          createKey,
+          deleteKey,
+          copyText,
+          sendChat
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
