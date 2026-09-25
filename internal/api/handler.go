@@ -425,3 +425,40 @@ func (h *Handler) HandleCompletions(c *gin.Context) {
 	}
 }
 
+// HandleAnthropicCountTokens handles POST /v1/messages/count_tokens for Anthropic Claude SDK compatibility.
+func (h *Handler) HandleAnthropicCountTokens(c *gin.Context) {
+	var req struct {
+		Model    string `json:"model"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+		System any `json:"system,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	chars := 0
+	if req.System != nil {
+		if s, ok := req.System.(string); ok {
+			chars += len(s)
+		}
+	}
+	for _, m := range req.Messages {
+		if s, ok := m.Content.(string); ok {
+			chars += len(s)
+		}
+	}
+	tokens := chars / 4
+	if tokens == 0 {
+		tokens = 1
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"input_tokens": tokens,
+	})
+}
+
+

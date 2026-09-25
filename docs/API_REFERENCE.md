@@ -73,9 +73,39 @@ curl -X POST http://localhost:8080/v1/messages \
   }'
 ```
 
+### 2.4 Anthropic Claude Token Counting
+- **Endpoint**: `POST /v1/messages/count_tokens`
+- **Supported Clients**: Anthropic SDKs (e.g. `client.messages.count_tokens(...)`), Agent token budget estimators.
+- **Protocol Adaptation**: Supports counting tokens for upstream Claude engines and estimates tokens for translated OpenAI/GPUStack upstreams.
+
+#### Request Example:
+```bash
+curl -X POST http://localhost:8080/v1/messages/count_tokens \
+  -H "x-api-key: sk-gw-xxxx" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-3-5-sonnet",
+    "messages": [
+      {"role": "user", "content": "Estimate token usage for this payload."}
+    ]
+  }'
+```
+
+#### Response Example:
+```json
+{
+  "input_tokens": 16
+}
+```
+
+### 2.5 DeepSeek-R1 / Reasoning Models Transparency
+- **Transparent Field**: `reasoning_content` in Chat Completions chunk and message objects.
+- **Stream Transparency**: Streaming chunks carrying reasoning tokens (such as DeepSeek-R1 thinking traces or OpenAI o1/o3 reasoning chunks) are forwarded transparently with zero-copy overhead without stripping thinking blocks.
+
 ---
 
-## 3. Multimodal Endpoints
+## 3. Multimodal & Information Retrieval Endpoints
 
 ### 3.1 AI Image Generation
 - **Endpoint**: `POST /v1/images/generations`
@@ -124,7 +154,20 @@ curl -X POST http://localhost:8080/v1/audio/transcriptions \
   -F "model=whisper-1"
 ```
 
-### 3.4 Video Generation & Task Polling
+### 3.4 Audio Translation
+- **Endpoint**: `POST /v1/audio/translations`
+- **Content-Type**: `multipart/form-data`
+- **Description**: Translates foreign audio recordings directly into English text.
+
+#### Request Example:
+```bash
+curl -X POST http://localhost:8080/v1/audio/translations \
+  -H "Authorization: Bearer sk-gw-xxxx" \
+  -F "file=@/path/to/french_speech.mp3" \
+  -F "model=whisper-1"
+```
+
+### 3.5 Video Generation & Task Polling
 - **Task Submission**: `POST /v1/videos/generations`
 - **Task Polling**: `GET /v1/videos/tasks/:id`
 
@@ -147,7 +190,7 @@ curl -X GET http://localhost:8080/v1/videos/tasks/video_task_123 \
   -H "Authorization: Bearer sk-gw-xxxx"
 ```
 
-### 3.5 Vector Embeddings
+### 3.6 Vector Embeddings
 - **Endpoint**: `POST /v1/embeddings`
 - **Supported Providers**: OpenAI, GPUStack, vLLM, Ollama, SGLang, Sub2API, Google Gemini.
 - **Protocol Adaptation**: Full native translation for Google Gemini (`:embedContent` and `:batchEmbedContents`), model rewriting, token tracking, and automatic safe fallback across candidate embedding nodes. Supports single string or batch string inputs.
@@ -187,6 +230,56 @@ curl -X POST http://localhost:8080/v1/embeddings \
 }
 ```
 
+### 3.7 Rerank (Cross-Encoder Document Re-ranking)
+- **Endpoint**: `POST /v1/rerank`
+- **Supported Engines**: GPUStack, Hugging Face Text Embeddings Inference (TEI), Infinity, Xinference, Cohere, Jina.
+- **HA Safe Fallback**: Protected by gateway circuit breaker. If the primary reranker encounters OOM, 503, or network timeout, the gateway automatically retries the backup reranker before sending headers.
+
+#### Request Example:
+```bash
+curl -X POST http://localhost:8080/v1/rerank \
+  -H "Authorization: Bearer sk-gw-xxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bge-reranker-large",
+    "query": "What is high availability in enterprise LLM gateways?",
+    "documents": [
+      "Nano-Gateway provides zero-copy streaming and pre-first-token fallback.",
+      "The weather today in Tokyo is sunny with blooming cherry blossoms.",
+      "Distributed databases using Raft consensus ensure strong consistency."
+    ],
+    "top_n": 2,
+    "return_documents": true
+  }'
+```
+
+#### Response Example:
+```json
+{
+  "id": "rerank-c7e148a0",
+  "results": [
+    {
+      "index": 0,
+      "relevance_score": 0.9856,
+      "document": {
+        "text": "Nano-Gateway provides zero-copy streaming and pre-first-token fallback."
+      }
+    },
+    {
+      "index": 2,
+      "relevance_score": 0.3210,
+      "document": {
+        "text": "Distributed databases using Raft consensus ensure strong consistency."
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 86,
+    "total_tokens": 86
+  }
+}
+```
+
 ---
 
 ## 4. Control Plane Admin APIs
@@ -197,7 +290,7 @@ All Admin APIs are under `/api/v1/admin`:
 | :--- | :--- | :--- |
 | `GET` | `/api/v1/admin/channels` | List all configured providers with live circuit breaker statuses |
 | `POST` | `/api/v1/admin/channels` | Create a new provider and immediately hot-reload in memory |
-| `POST` | `/api/v1/admin/channels/probe` | **Auto-Probe**: Automatically test downstream URL, extract model IDs, infer protocols |
+| `POST` | `/api/v1/admin/channels/probe` | **Deep Auto-Probe**: Automatically normalize URL, probe live models, fingerprint upstream engine (GPUStack, vLLM, SGLang, Ollama, DeepSeek, Gemini, Anthropic, Sub2API), infer protocols (`chat`, `completion`, `messages`, `embeddings`, `rerank`, etc.) |
 | `POST` | `/api/v1/admin/channels/:id/test` | Ping downstream provider for latency & response verification |
 | `DELETE`| `/api/v1/admin/channels/:id` | Delete provider and remove from routing |
 | `GET` | `/api/v1/admin/keys` | List all client virtual keys with rate limits & budgets |

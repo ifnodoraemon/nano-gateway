@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Activity,
   Zap,
@@ -55,7 +55,7 @@ export default function App() {
     weight: 10,
     models_str: '',
     mapping_str: '',
-    protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'embeddings', 'images', 'audio_speech', 'audio_transcription', 'videos'],
+    protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'embeddings', 'rerank', 'images', 'audio_speech', 'audio_transcription', 'videos'],
   });
 
   const [probing, setProbing] = useState(false);
@@ -84,6 +84,7 @@ export default function App() {
   const [playPrompt, setPlayPrompt] = useState('请用一句话介绍你自己和你的技术架构。');
   const [playImageUrl, setPlayImageUrl] = useState('');
   const [playTTFTMs, setPlayTTFTMs] = useState(0);
+  const [playReasoningOutput, setPlayReasoningOutput] = useState('');
 
   // 2. Image Generation state
   const [imgModel, setImgModel] = useState('dall-e-3');
@@ -118,6 +119,19 @@ export default function App() {
   const [embedInput, setEmbedInput] = useState('Google DeepMind 团队打造的下一代超高性能 AI 原生网关，全双工零内存拷贝分发');
   const [embedResult, setEmbedResult] = useState(null);
   const [embedDim, setEmbedDim] = useState(0);
+
+  // 7. Rerank state
+  const [rerankModel, setRerankModel] = useState('bge-reranker-large');
+  const [rerankQuery, setRerankQuery] = useState('什么是企业级大模型网关的高可用与容灾设计？');
+  const [rerankDocs, setRerankDocs] = useState([
+    'Nano-Gateway 采用全双工流式转发与零内存拷贝架构，首字分块前支持透明故障转移与熔断兜底。',
+    '今天天气非常晴朗，公园里的樱花盛开了，很适合去散步或野餐。',
+    '基于 Raft 协议的分布式数据库能保证网络分区状态下的强一致性与多副本高可用。',
+    '大模型网关内置动态跨协议转换引擎，实现 OpenAI、Anthropic Claude 与 Gemini 协议全双工互转。',
+    'Cross-Encoder 重排模型能够对初筛候选文档与查询进行精细全量语义交互打分。',
+  ].join('\n---\n'));
+  const [rerankTopN, setRerankTopN] = useState(3);
+  const [rerankResult, setRerankResult] = useState(null);
 
   // Docs tab category
   const [docsSection, setDocsSection] = useState('quickstart');
@@ -173,53 +187,81 @@ export default function App() {
     }
   }, [currentTab]);
 
-  // Downstream Auto-Probe
-  const handleProbeChannel = async () => {
-    if (!newChannel.base_url.trim()) {
-      alert('请先输入下游服务的 Base URL');
+  // Automatic Zero-Choice Debounced Probe
+  const lastProbedUrlRef = useRef('');
+  const lastProbedKeyRef = useRef('');
+
+  const triggerProbe = async (url, apiKey, currentType, isAuto = false) => {
+    if (!url || !url.trim()) {
+      if (!isAuto) alert('请先输入下游服务的 Base URL');
       return;
     }
     setProbing(true);
-    setProbeAlert(null);
+    if (!isAuto) setProbeAlert(null);
     try {
       const res = await fetch('/api/v1/admin/channels/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          base_url: newChannel.base_url,
-          api_key: newChannel.api_key,
-          type: newChannel.type,
+          base_url: url.trim(),
+          api_key: apiKey || '',
+          type: currentType || 'openai',
         }),
       });
       const data = await res.json();
       if (data.code === 0 && data.data) {
         const d = data.data;
-        setNewChannel(prev => ({
-          ...prev,
-          type: d.type || prev.type,
-          name: prev.name ? prev.name : d.suggested_name,
-          models_str: d.models?.length ? d.models.join(', ') : prev.models_str,
-          protocols: d.protocols?.length ? d.protocols : prev.protocols,
-        }));
+        setNewChannel(prev => {
+          const shouldUpdateName = !prev.name || prev.name.includes('upstream') || prev.name.includes('cluster') || prev.name.includes('instance') || prev.name.includes('official') || prev.name.includes('direct');
+          return {
+            ...prev,
+            type: d.type || prev.type,
+            name: shouldUpdateName ? (d.suggested_name || prev.name) : prev.name,
+            models_str: (d.models && d.models.length > 0) ? d.models.join(', ') : prev.models_str,
+            protocols: (d.protocols && d.protocols.length > 0) ? d.protocols : prev.protocols,
+          };
+        });
         setProbeAlert({
           type: 'success',
-          text: `✅ 智能探测成功 (耗时: ${d.latency_ms}ms)！已自动匹配 ${d.models?.length || 0} 个模型并勾选对应协议。${d.message ? `(${d.message})` : ''}`,
+          text: `✨ 智能探测成功 (耗时: ${d.latency_ms}ms)！已自动匹配 [${d.type}] 引擎，获取到 ${d.models?.length || 0} 个模型并勾选对应协议。${d.message ? `(${d.message})` : ''}`,
         });
-      } else {
+      } else if (!isAuto) {
         setProbeAlert({
           type: 'error',
           text: `❌ 探测失败: ${data.error || '无法连通指定上游'}`,
         });
       }
     } catch (e) {
-      setProbeAlert({
-        type: 'error',
-        text: `探测异常: ${e.message}`,
-      });
+      if (!isAuto) {
+        setProbeAlert({
+          type: 'error',
+          text: `探测异常: ${e.message}`,
+        });
+      }
     } finally {
       setProbing(false);
     }
   };
+
+  const handleProbeChannel = () => {
+    triggerProbe(newChannel.base_url, newChannel.api_key, newChannel.type, false);
+  };
+
+  // Zero-choice auto-probing: triggers when user enters or pastes a Base URL
+  useEffect(() => {
+    if (!showChannelModal) return;
+    const url = newChannel.base_url.trim();
+    if (!url || url.length < 8) return;
+    if (url === lastProbedUrlRef.current && newChannel.api_key === lastProbedKeyRef.current) return;
+
+    const timer = setTimeout(() => {
+      lastProbedUrlRef.current = url;
+      lastProbedKeyRef.current = newChannel.api_key;
+      triggerProbe(url, newChannel.api_key, newChannel.type, true);
+    }, 650);
+
+    return () => clearTimeout(timer);
+  }, [newChannel.base_url, newChannel.api_key, showChannelModal]);
 
   // Quick Presets for Provider
   const applyPreset = (presetKey) => {
@@ -232,9 +274,9 @@ export default function App() {
           api_key: '',
           priority: 1,
           weight: 10,
-          models_str: 'gpt-4o, claude-3-5-sonnet, deepseek-chat, dall-e-3, tts-1',
+          models_str: 'gpt-4o, claude-3-5-sonnet, deepseek-chat, bge-reranker-large, dall-e-3, tts-1',
           mapping_str: 'my-corp/*:*',
-          protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'images', 'audio_speech', 'audio_transcription', 'videos'],
+          protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'embeddings', 'rerank', 'images', 'audio_speech', 'audio_transcription', 'videos'],
         });
         break;
       case 'gpustack':
@@ -245,9 +287,9 @@ export default function App() {
           api_key: '',
           priority: 1,
           weight: 10,
-          models_str: 'meta-llama/Llama-3.1-8B-Instruct, deepseek-r1-distill-qwen-14b, flux-schnell',
+          models_str: 'meta-llama/Llama-3.1-8B-Instruct, deepseek-r1-distill-qwen-14b, bge-reranker-large, flux-schnell',
           mapping_str: 'local/*:*',
-          protocols: ['openai_chat', 'openai_text', 'images'],
+          protocols: ['openai_chat', 'openai_text', 'embeddings', 'rerank', 'images'],
         });
         break;
       case 'gemini':
@@ -258,9 +300,9 @@ export default function App() {
           api_key: '',
           priority: 1,
           weight: 10,
-          models_str: 'gemini-2.0-flash, gemini-1.5-pro, gemini-1.5-flash',
+          models_str: 'gemini-2.0-flash, gemini-1.5-pro, gemini-1.5-flash, text-embedding-004',
           mapping_str: '',
-          protocols: ['openai_chat', 'anthropic_messages'],
+          protocols: ['openai_chat', 'anthropic_messages', 'embeddings'],
         });
         break;
       case 'anthropic':
@@ -284,9 +326,9 @@ export default function App() {
           api_key: '',
           priority: 1,
           weight: 10,
-          models_str: 'gpt-4o, gpt-4o-mini, o3-mini, dall-e-3, tts-1, whisper-1, sora',
+          models_str: 'gpt-4o, gpt-4o-mini, o3-mini, text-embedding-3-small, dall-e-3, tts-1, whisper-1, sora',
           mapping_str: '',
-          protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'images', 'audio_speech', 'audio_transcription', 'videos'],
+          protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'embeddings', 'rerank', 'images', 'audio_speech', 'audio_transcription', 'videos'],
         });
         break;
       case 'deepseek':
@@ -310,9 +352,9 @@ export default function App() {
           api_key: '',
           priority: 2,
           weight: 10,
-          models_str: 'custom-model-v1, flux-schnell',
+          models_str: 'custom-model-v1, bge-reranker-large, flux-schnell',
           mapping_str: 'cascade/custom/*:*',
-          protocols: ['openai_chat', 'images', 'audio_speech', 'videos'],
+          protocols: ['openai_chat', 'embeddings', 'rerank', 'images', 'audio_speech', 'videos'],
         });
         break;
       default:
@@ -370,7 +412,7 @@ export default function App() {
       weight: 10,
       models_str: '',
       mapping_str: '',
-      protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'images', 'audio_speech', 'audio_transcription', 'videos'],
+      protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'embeddings', 'rerank', 'images', 'audio_speech', 'audio_transcription', 'videos'],
     });
     fetchData();
   };
@@ -431,6 +473,7 @@ export default function App() {
     if (!playPrompt.trim()) return;
     setPlayLoading(true);
     setPlayOutput('');
+    setPlayReasoningOutput('');
     setPlayDurationMs(0);
     setPlayTTFTMs(0);
 
@@ -507,6 +550,9 @@ export default function App() {
           setPlayOutput(data.content?.[0]?.text || '');
         } else {
           setPlayOutput(data.choices?.[0]?.message?.content || '');
+          if (data.choices?.[0]?.message?.reasoning_content) {
+            setPlayReasoningOutput(data.choices[0].message.reasoning_content);
+          }
         }
       } else {
         const reader = res.body.getReader();
@@ -530,12 +576,21 @@ export default function App() {
             try {
               const chunk = JSON.parse(dataContent);
               let textDelta = '';
+              let reasoningDelta = '';
               if (chunk.choices?.[0]?.delta?.content) {
                 textDelta = chunk.choices[0].delta.content;
               } else if (chunk.choices?.[0]?.text) {
                 textDelta = chunk.choices[0].text;
               } else if (chunk.delta?.text) {
                 textDelta = chunk.delta.text;
+              }
+
+              if (chunk.choices?.[0]?.delta?.reasoning_content) {
+                reasoningDelta = chunk.choices[0].delta.reasoning_content;
+              }
+
+              if (reasoningDelta) {
+                setPlayReasoningOutput(prev => prev + reasoningDelta);
               }
 
               if (textDelta) {
@@ -803,6 +858,56 @@ export default function App() {
       }
     } catch (e) {
       setPlayOutput(`向量化网络异常: ${e.message}`);
+    } finally {
+      setPlayLoading(false);
+    }
+  };
+
+  // 7. Cross-Encoder Rerank Execution
+  const handleExecuteRerank = async () => {
+    if (!rerankQuery.trim() || !rerankDocs.trim()) {
+      alert('请输入检索 Query 和待重排候选文档');
+      return;
+    }
+    setPlayLoading(true);
+    setRerankResult(null);
+    setPlayOutput('');
+    setPlayDurationMs(0);
+    const start = Date.now();
+
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (playApiKey) {
+        headers['Authorization'] = `Bearer ${playApiKey}`;
+      }
+      let docList = [];
+      if (rerankDocs.includes('\n---\n')) {
+        docList = rerankDocs.split('\n---\n').map(s => s.trim()).filter(Boolean);
+      } else {
+        docList = rerankDocs.split('\n').map(s => s.trim()).filter(Boolean);
+      }
+
+      const res = await fetch('/v1/rerank', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: rerankModel,
+          query: rerankQuery,
+          documents: docList,
+          top_n: parseInt(rerankTopN) || 3,
+          return_documents: true,
+        }),
+      });
+      setPlayDurationMs(Date.now() - start);
+      const data = await res.json();
+      if (!res.ok) {
+        setPlayOutput(`重排请求失败 (${res.status}):\n${JSON.stringify(data, null, 2)}`);
+      } else {
+        setRerankResult(data);
+        setPlayOutput(JSON.stringify(data, null, 2));
+      }
+    } catch (e) {
+      setPlayOutput(`重排网络异常: ${e.message}`);
     } finally {
       setPlayLoading(false);
     }
@@ -1131,6 +1236,8 @@ export default function App() {
                                 else if (p === 'audio_speech' || p === 'tts') { label = '🔊 TTS'; colorClass = 'bg-cyan-50 text-cyan-700 border border-cyan-200'; }
                                 else if (p === 'audio_transcription' || p === 'stt') { label = '🎙️ STT'; colorClass = 'bg-teal-50 text-teal-700 border border-teal-200'; }
                                 else if (p === 'videos' || p === 'video_generation') { label = '🎬 视频'; colorClass = 'bg-purple-50 text-purple-700 border border-purple-200'; }
+                                else if (p === 'embeddings' || p === 'embedding') { label = '🧠 向量'; colorClass = 'bg-emerald-50 text-emerald-700 border border-emerald-200'; }
+                                else if (p === 'rerank' || p === 'reranker') { label = '🎯 重排'; colorClass = 'bg-amber-50 text-amber-700 border border-amber-200'; }
                                 return (
                                   <span key={p} className={`px-2 py-0.5 rounded text-[11px] font-medium ${colorClass}`}>
                                     {label}
@@ -1459,6 +1566,18 @@ export default function App() {
                   <Cpu className="w-4 h-4" />
                   <span>🧠 向量特征 (Embeddings)</span>
                 </button>
+
+                <button
+                  onClick={() => setPlayModality('rerank')}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-sm font-semibold transition ${
+                    playModality === 'rerank'
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <Sliders className="w-4 h-4" />
+                  <span>🎯 检索重排 (Rerank)</span>
+                </button>
               </div>
 
               {/* Modality Layout: Controls + Output */}
@@ -1475,6 +1594,7 @@ export default function App() {
                         {playModality === 'audio_transcription' && '语音识别参数 (/v1/audio/transcriptions)'}
                         {playModality === 'videos' && '视频生成参数 (/v1/videos)'}
                         {playModality === 'embeddings' && '向量化特征参数 (/v1/embeddings)'}
+                        {playModality === 'rerank' && '检索重排参数 (/v1/rerank)'}
                       </span>
                     </h3>
                     <span className="text-xs px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md font-mono">Live</span>
@@ -1720,6 +1840,47 @@ export default function App() {
                     </>
                   )}
 
+                  {/* 7. RERANK CONTROLS */}
+                  {playModality === 'rerank' && (
+                    <>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">重排模型标识 (Model)</label>
+                        <input
+                          value={rerankModel}
+                          onChange={(e) => setRerankModel(e.target.value)}
+                          placeholder="bge-reranker-large, jina-reranker-v2-base-en"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-800 focus:outline-none focus:border-amber-500 focus:bg-white font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between items-center mb-1">
+                          <label className="text-xs font-semibold text-slate-600">截断输出条数 (Top N)</label>
+                          <span className="font-mono text-xs font-bold text-amber-600">{rerankTopN} 条</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="1"
+                          max="10"
+                          step="1"
+                          value={rerankTopN}
+                          onChange={(e) => setRerankTopN(parseInt(e.target.value) || 3)}
+                          className="w-full accent-amber-600 cursor-pointer"
+                        />
+                      </div>
+
+                      <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1">
+                        <span className="font-bold flex items-center space-x-1">
+                          <Sliders className="w-3.5 h-3.5 text-amber-600" />
+                          <span>Cross-Encoder 检索重排说明:</span>
+                        </span>
+                        <p className="text-[11px] leading-relaxed text-amber-800">
+                          在 RAG 管道初筛后，将 Query 与多篇候选文档输入重排模型，计算深度交互语义相关度得分，输出高质量有序 Top-N 结果。
+                        </p>
+                      </div>
+                    </>
+                  )}
+
                   {/* Telemetry Footer */}
                   <div className="pt-4 border-t border-slate-100 text-xs text-slate-500 space-y-2">
                     {playModality === 'chat' && (
@@ -1741,13 +1902,26 @@ export default function App() {
                   <div className="flex-1 overflow-y-auto space-y-4 p-4 rounded-xl border border-slate-200 leading-relaxed bg-slate-50/60">
                     {/* Chat Result */}
                     {playModality === 'chat' && (
-                      <div className="font-mono text-sm whitespace-pre-wrap text-slate-800">
-                        {playOutput || (
-                          <div className="text-slate-400 text-center py-32 font-sans flex flex-col items-center justify-center space-y-2">
-                            <Sparkles className="w-8 h-8 text-indigo-400 stroke-1" />
-                            <span>在下方输入提示词，点击发送验证跨协议流式分发</span>
+                      <div className="font-mono text-sm whitespace-pre-wrap text-slate-800 space-y-3">
+                        {playReasoningOutput && (
+                          <div className="p-3.5 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-950 font-mono shadow-xs">
+                            <div className="font-bold flex items-center space-x-1.5 text-amber-800 mb-1.5">
+                              <Sparkles className="w-3.5 h-3.5 text-amber-600 animate-pulse" />
+                              <span>深度思维链推理过程 (Reasoning Content)</span>
+                            </div>
+                            <div className="whitespace-pre-wrap leading-relaxed text-amber-900/90 text-[11px]">
+                              {playReasoningOutput}
+                            </div>
                           </div>
                         )}
+                        <div>
+                          {playOutput || (!playReasoningOutput && (
+                            <div className="text-slate-400 text-center py-32 font-sans flex flex-col items-center justify-center space-y-2">
+                              <Sparkles className="w-8 h-8 text-indigo-400 stroke-1" />
+                              <span>在下方输入提示词，点击发送验证跨协议流式分发</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
 
@@ -1987,6 +2161,94 @@ export default function App() {
                         )}
                       </div>
                     )}
+
+                    {/* 7. Rerank Result */}
+                    {playModality === 'rerank' && (
+                      <div className="h-full flex flex-col justify-between">
+                        {rerankResult ? (
+                          <div className="space-y-4">
+                            <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-200">
+                              <div className="flex items-center space-x-3 text-xs">
+                                <span className="font-semibold text-slate-700">命中排序:</span>
+                                <span className="px-2 py-0.5 bg-amber-50 text-amber-700 font-mono font-bold rounded border border-amber-200">
+                                  Top {rerankResult.results?.length || 0}
+                                </span>
+                                {rerankResult.usage && (
+                                  <>
+                                    <span className="font-semibold text-slate-700">总 Token:</span>
+                                    <span className="font-mono font-bold text-indigo-600">
+                                      {rerankResult.usage.total_tokens || rerankResult.usage.prompt_tokens || 0}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => copyToClipboard(JSON.stringify(rerankResult.results, null, 2))}
+                                className="px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-xs font-medium flex items-center space-x-1"
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>复制重排数据</span>
+                              </button>
+                            </div>
+
+                            {/* Ranked Cards */}
+                            <div className="space-y-3 overflow-y-auto max-h-[460px] pr-1">
+                              {(rerankResult.results || []).map((item, idx) => {
+                                const rawScore = Number(item.relevance_score || 0);
+                                const pct = Math.min(100, Math.max(0, rawScore > 1 ? rawScore : rawScore * 100));
+                                const docText = typeof item.document === 'object' ? item.document?.text : item.document;
+                                return (
+                                  <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200/90 shadow-xs space-y-2.5">
+                                    <div className="flex items-center justify-between">
+                                      <div className="flex items-center space-x-2">
+                                        <span className={`px-2.5 py-0.5 rounded text-xs font-bold font-mono ${
+                                          idx === 0
+                                            ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                                            : idx === 1
+                                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                            : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                                        }`}>
+                                          #{idx + 1}
+                                        </span>
+                                        <span className="text-xs text-slate-400 font-mono">原文档序号: #{item.index}</span>
+                                      </div>
+                                      <span className="text-xs font-mono font-bold text-slate-800">
+                                        得分: <span className="text-amber-600">{rawScore.toFixed(4)}</span>
+                                      </span>
+                                    </div>
+                                    <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                                      <div
+                                        className={`h-full rounded-full transition-all duration-500 ${
+                                          idx === 0 ? 'bg-amber-500' : idx === 1 ? 'bg-emerald-500' : 'bg-indigo-500'
+                                        }`}
+                                        style={{ width: `${pct}%` }}
+                                      />
+                                    </div>
+                                    {docText && (
+                                      <div className="text-xs text-slate-700 leading-relaxed font-sans bg-slate-50/80 p-3 rounded-lg border border-slate-100">
+                                        {docText}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-slate-400 text-center py-32 font-sans flex flex-col items-center justify-center space-y-2">
+                            <Sliders className="w-8 h-8 text-amber-400 stroke-1" />
+                            <span>在下方输入查询 Query 和候选文档，点击「执行重排」查看打分排序</span>
+                          </div>
+                        )}
+
+                        {playOutput && (
+                          <details className="w-full mt-4 text-xs font-mono bg-white p-3 rounded-xl border border-slate-200">
+                            <summary className="cursor-pointer text-slate-500 font-semibold">查看接口完整 JSON 响应</summary>
+                            <pre className="mt-2 text-slate-700 whitespace-pre-wrap max-h-48 overflow-y-auto">{playOutput}</pre>
+                          </details>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Input & Action Bar */}
@@ -2107,6 +2369,35 @@ export default function App() {
                         </button>
                       </>
                     )}
+
+                    {playModality === 'rerank' && (
+                      <div className="flex-1 flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-3">
+                        <div className="flex-1 space-y-2">
+                          <input
+                            type="text"
+                            value={rerankQuery}
+                            onChange={(e) => setRerankQuery(e.target.value)}
+                            placeholder="输入检索 Query 查询语句..."
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-amber-500 focus:bg-white font-medium"
+                          />
+                          <textarea
+                            rows={2}
+                            value={rerankDocs}
+                            onChange={(e) => setRerankDocs(e.target.value)}
+                            placeholder="输入候选文档列表（使用 --- 隔开每篇文档）..."
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-800 focus:outline-none focus:border-amber-500 focus:bg-white resize-none font-mono"
+                          />
+                        </div>
+                        <button
+                          onClick={handleExecuteRerank}
+                          disabled={playLoading || !rerankQuery.trim() || !rerankDocs.trim()}
+                          className="px-6 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl font-semibold flex items-center justify-center space-x-2 transition shadow-sm text-sm shrink-0 self-end sm:self-stretch"
+                        >
+                          {playLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sliders className="w-4 h-4" />}
+                          <span>执行重排</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2156,6 +2447,15 @@ export default function App() {
                   <span>级联模型映射语法</span>
                 </button>
                 <button
+                  onClick={() => setDocsSection('rerank')}
+                  className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition ${
+                    docsSection === 'rerank' ? 'bg-indigo-50 text-indigo-700 font-bold' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Sliders className="w-3.5 h-3.5" />
+                  <span>Rerank 检索重排规范</span>
+                </button>
+                <button
                   onClick={() => setDocsSection('deploy')}
                   className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition ${
                     docsSection === 'deploy' ? 'bg-indigo-50 text-indigo-700 font-bold' : 'text-slate-600 hover:bg-slate-100'
@@ -2203,6 +2503,16 @@ for chunk in response:
                       </button>
                     </div>
 
+                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1">
+                      <span className="font-bold flex items-center space-x-1">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                        <span>DeepSeek-R1 / OpenAI o1 思维链透明透传:</span>
+                      </span>
+                      <p className="leading-relaxed">
+                        网关在流式与非流式模式下均原生支持 <code>reasoning_content</code> 字段的零拷贝透传。前端应用或 NextChat / LobeChat 可直接原生渲染展开思维链推导卡片。
+                      </p>
+                    </div>
+
                     <div className="border-t border-slate-100 pt-4">
                       <h4 className="text-xs font-bold text-slate-800 mb-2">cURL 极速调试命令:</h4>
                       <pre className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-700 overflow-x-auto">
@@ -2246,6 +2556,20 @@ print(message.content[0].text)`}
                         即使您的下游供应商是仅支持 OpenAI 协议的私有 GPUStack 集群，客户端通过 Anthropic SDK 请求时，网关也会在内存零拷贝将 Claude Messages 双向转换为 OpenAI Completions 并在返回时转回 Anthropic 格式。
                       </p>
                     </div>
+
+                    <div className="border-t border-slate-100 pt-4">
+                      <h4 className="text-xs font-bold text-slate-800 mb-1">Anthropic Token 预估计算 (/v1/messages/count_tokens):</h4>
+                      <pre className="p-3 bg-slate-900 text-slate-100 rounded-xl text-xs font-mono overflow-x-auto">
+{`curl -X POST http://localhost:8080/v1/messages/count_tokens \\
+  -H "x-api-key: sk-gw-xxxx" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model": "claude-3-5-sonnet", "messages": [{"role": "user", "content": "Hello world"}]}'
+
+# 响应示例:
+# {"input_tokens": 12}`}
+                      </pre>
+                    </div>
                   </div>
                 )}
 
@@ -2253,7 +2577,7 @@ print(message.content[0].text)`}
                   <div className="space-y-4">
                     <div className="border-b border-slate-100 pb-3">
                       <h3 className="text-base font-bold text-slate-900">多模态 API 接口规范</h3>
-                      <p className="text-xs text-slate-500 mt-0.5">生图、语音合成 TTS、语音识别 STT、视频生成与轮询均通过统一熔断与分发管道提供。</p>
+                      <p className="text-xs text-slate-500 mt-0.5">生图、语音合成 TTS、语音识别 STT、语音翻译、视频生成与轮询均通过统一熔断与分发管道提供。</p>
                     </div>
 
                     <div className="space-y-3 text-xs">
@@ -2283,7 +2607,16 @@ file=@recording.mp3; model=whisper-1`}
                       </div>
 
                       <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                        <span className="font-bold text-purple-700">🎬 4. 视频生成与轮询 (/v1/videos/generations & /v1/videos/tasks/:id)</span>
+                        <span className="font-bold text-teal-700">🌐 4. Whisper 语音翻译 (/v1/audio/translations)</span>
+                        <pre className="mt-1 font-mono text-slate-700">
+{`POST /v1/audio/translations (multipart/form-data)
+file=@foreign_speech.mp3; model=whisper-1
+(将源语言音频直接翻译并转录为英文文本)`}
+                        </pre>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                        <span className="font-bold text-purple-700">🎬 5. 视频生成与轮询 (/v1/videos/generations & /v1/videos/tasks/:id)</span>
                         <pre className="mt-1 font-mono text-slate-700">
 {`POST /v1/videos/generations -> 返回 {"task_id": "task_xxx", "status": "PENDING"}
 GET /v1/videos/tasks/:id    -> 轮询状态直到 SUCCESS 并返回 video_url`}
@@ -2291,7 +2624,7 @@ GET /v1/videos/tasks/:id    -> 轮询状态直到 SUCCESS 并返回 video_url`}
                       </div>
 
                       <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                        <span className="font-bold text-emerald-700">🧠 5. 文本向量化 Embeddings (/v1/embeddings)</span>
+                        <span className="font-bold text-emerald-700">🧠 6. 文本向量化 Embeddings (/v1/embeddings)</span>
                         <pre className="mt-1 font-mono text-slate-700">
 {`POST /v1/embeddings
 {"model": "text-embedding-3-small", "input": "企业级超高性能大模型网关"}
@@ -2325,6 +2658,73 @@ GET /v1/videos/tasks/:id    -> 轮询状态直到 SUCCESS 并返回 video_url`}
                           当存在多个提供商均提供 <code>gpt-4o</code> 时，客户端可直接指定 <code>openai-us/gpt-4o</code> 精准定向路由！
                         </li>
                       </ul>
+                    </div>
+                  </div>
+                )}
+
+                {docsSection === 'rerank' && (
+                  <div className="space-y-4">
+                    <div className="border-b border-slate-100 pb-3">
+                      <h3 className="text-base font-bold text-slate-900">Rerank 检索重排 API 规范 (/v1/rerank)</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">全面兼容 Cohere、Hugging Face TEI、GPUStack、Xinference 与 Infinity 重排标准协议。</p>
+                    </div>
+
+                    <div className="space-y-3 text-xs">
+                      <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                        <span className="font-bold text-slate-900">1. 重排请求格式 (POST /v1/rerank):</span>
+                        <pre className="p-3 bg-slate-900 text-slate-100 rounded-xl font-mono overflow-x-auto text-[11px] leading-relaxed">
+{`curl -X POST http://localhost:8080/v1/rerank \\
+  -H "Authorization: Bearer sk-gw-xxxx" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "bge-reranker-large",
+    "query": "什么是企业级大模型网关的高可用与容灾设计？",
+    "documents": [
+      "Nano-Gateway 采用全双工流式转发，首字分块前支持透明故障转移与熔断兜底。",
+      "今天天气非常晴朗，公园里的樱花盛开了，很适合去散步或野餐。",
+      "基于 Raft 协议的分布式数据库能保证网络分区状态下的强一致性与多副本高可用。"
+    ],
+    "top_n": 2,
+    "return_documents": true
+  }'`}
+                        </pre>
+                      </div>
+
+                      <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                        <span className="font-bold text-slate-900">2. 重排结果响应格式 (JSON):</span>
+                        <pre className="p-3 bg-slate-900 text-emerald-400 rounded-xl font-mono overflow-x-auto text-[11px] leading-relaxed">
+{`{
+  "id": "rerank-a8c1f9b2",
+  "results": [
+    {
+      "index": 0,
+      "relevance_score": 0.9856,
+      "document": {
+        "text": "Nano-Gateway 采用全双工流式转发，首字分块前支持透明故障转移与熔断兜底。"
+      }
+    },
+    {
+      "index": 2,
+      "relevance_score": 0.3210,
+      "document": {
+        "text": "基于 Raft 协议的分布式数据库能保证网络分区状态下的强一致性与多副本高可用。"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 128,
+    "total_tokens": 128
+  }
+}`}
+                        </pre>
+                      </div>
+
+                      <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1">
+                        <span className="font-bold">🎯 高可用熔断与透明兜底保障:</span>
+                        <p className="leading-relaxed">
+                          当首选重排提供商（如私有部署的 GPUStack 实例）发生 OOM、503 或网络异常时，Nano-Gateway 会在毫秒级内自动安全切换至备选重排提供商，为企业级 RAG 知识库检索流水线提供全天候 99.99% 的 SLA 稳定可用保障。
+                        </p>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -2623,6 +3023,15 @@ helm install nano-gateway ./helm/nano-gateway -n gateway --create-namespace
                       className="rounded border-slate-300 text-indigo-600 focus:ring-0"
                     />
                     <span>🧠 文本向量 Embedding (/v1/embeddings)</span>
+                  </label>
+                  <label className="flex items-center space-x-2 text-slate-700 cursor-pointer p-2 rounded-lg hover:bg-slate-50 border border-slate-100">
+                    <input
+                      type="checkbox"
+                      checked={newChannel.protocols.includes('rerank')}
+                      onChange={() => toggleProtocol('rerank')}
+                      className="rounded border-slate-300 text-indigo-600 focus:ring-0"
+                    />
+                    <span>🎯 检索重排 Rerank (/v1/rerank)</span>
                   </label>
                   <label className="flex items-center space-x-2 text-slate-700 cursor-pointer p-2 rounded-lg hover:bg-slate-50 border border-slate-100 col-span-2">
                     <input

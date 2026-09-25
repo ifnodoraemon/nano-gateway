@@ -66,6 +66,9 @@ func (c *ChannelConfig) SupportsProtocol(proto string) bool {
 		if (p == "embeddings" || p == "embedding" || p == "openai_embeddings") && (proto == "embeddings" || proto == "embedding" || proto == "openai_embeddings") {
 			return true
 		}
+		if (p == "rerank" || p == "reranker" || p == "cohere_rerank") && (proto == "rerank" || proto == "reranker" || proto == "cohere_rerank") {
+			return true
+		}
 	}
 	return false
 }

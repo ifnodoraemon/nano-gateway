@@ -481,4 +481,51 @@ func (d *Dispatcher) DispatchEmbedding(ctx context.Context, req *model.Embedding
 	return nil, fmt.Errorf("all %d providers failed for embedding model '%s'. Last error: %w", len(channels), req.Model, lastErr)
 }
 
+// DispatchRerank routes a cross-encoder rerank request across candidate channels with Circuit Breaking and Safe Fallback.
+func (d *Dispatcher) DispatchRerank(ctx context.Context, req *model.RerankRequest) (*model.RerankResponse, error) {
+	channels := d.GetChannelsForModelAndProtocol(req.Model, "rerank")
+	if len(channels) == 0 {
+		channels = d.GetChannelsForModel(req.Model)
+	}
+	if len(channels) == 0 {
+		return nil, fmt.Errorf("no upstream provider available for rerank model '%s'", req.Model)
+	}
+
+	var lastErr error
+	for i, ch := range channels {
+		if !d.circuitBreaker.CanExecute(ch.Name) {
+			telemetry.Logger.Warn("circuit breaker is OPEN, bypassing dead upstream", "channel", ch.Name)
+			continue
+		}
+
+		start := time.Now()
+		openAIProv, ok := d.providers[model.ProviderOpenAI].(*provider.OpenAIProvider)
+		if !ok {
+			openAIProv = provider.NewOpenAIProvider(nil)
+		}
+
+		resp, err := openAIProv.Rerank(ctx, req, ch)
+		if err != nil {
+			d.circuitBreaker.RecordFailure(ch.Name)
+			lastErr = err
+			telemetry.GlobalMetrics.RecordFallback()
+			telemetry.Logger.Warn("upstream rerank request failed, falling back",
+				"channel", ch.Name,
+				"error", err.Error(),
+				"attempt", i+1,
+			)
+			continue
+		}
+
+		d.circuitBreaker.RecordSuccess(ch.Name)
+		dur := time.Since(start)
+		telemetry.GlobalMetrics.RecordRequest(true, dur, resp.Usage.TotalTokens, 0)
+		return resp, nil
+	}
+
+	telemetry.GlobalMetrics.RecordRequest(false, 0, 0, 0)
+	return nil, fmt.Errorf("all %d providers failed for rerank model '%s'. Last error: %w", len(channels), req.Model, lastErr)
+}
+
+
 

@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -51,6 +52,15 @@ func (p *DownstreamProber) Probe(ctx context.Context, req *ProbeRequest) (*Probe
 		return nil, fmt.Errorf("base_url is required")
 	}
 
+	// Auto-normalize URL scheme if user only entered hostname/ip/port
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		if strings.Contains(baseURL, "api.") || strings.Contains(baseURL, ".com") || strings.Contains(baseURL, ".org") || strings.Contains(baseURL, ".net") || strings.Contains(baseURL, ".ai") || strings.Contains(baseURL, "google") {
+			baseURL = "https://" + baseURL
+		} else {
+			baseURL = "http://" + baseURL
+		}
+	}
+
 	start := time.Now()
 
 	// 1. Check for Google Gemini Developer API
@@ -77,13 +87,15 @@ func (p *DownstreamProber) Probe(ctx context.Context, req *ProbeRequest) (*Probe
 
 	// If all probes fail, return a best-effort default result with latency
 	dur := time.Since(start).Milliseconds()
+	serverHeader := ""
+	detectedType := inferProviderType(baseURL, serverHeader, nil)
 	return &ProbeResult{
-		Type:          model.ProviderOpenAI,
-		SuggestedName: "custom-downstream",
+		Type:          detectedType,
+		SuggestedName: suggestProviderName(detectedType, baseURL, ""),
 		Models:        []string{"default-model"},
 		Protocols:     []string{"openai_chat", "openai_text"},
 		LatencyMs:     dur,
-		Message:       fmt.Sprintf("探测完成 (无法自动读取模型列表，已推荐标准协议): %v", err),
+		Message:       fmt.Sprintf("探测完成 (无法自动读取模型列表，已按地址推断并推荐标准协议): %v", err),
 	}, nil
 }
 
@@ -135,10 +147,26 @@ func (p *DownstreamProber) probeOpenAICompatible(ctx context.Context, baseURL, a
 				detectedType := inferProviderType(baseURL, serverHeader, modelIDs)
 				protocols := inferProtocols(modelIDs)
 
-				suggestedName := string(detectedType) + "-upstream"
-				if strings.Contains(strings.ToLower(serverHeader), "gpustack") || strings.Contains(baseURL, "gpustack") {
-					suggestedName = "gpustack-cluster"
+				// Lightweight active check for /v1/rerank if not yet detected from model names
+				if !contains(protocols, "rerank") {
+					rerankURL := strings.TrimRight(baseURL, "/") + "/rerank"
+					if !strings.HasSuffix(baseURL, "/v1") {
+						rerankURL = strings.TrimRight(baseURL, "/") + "/v1/rerank"
+					}
+					rReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, rerankURL, bytes.NewReader([]byte("{}")))
+					rReq.Header.Set("Content-Type", "application/json")
+					if apiKey != "" && apiKey != "none" {
+						rReq.Header.Set("Authorization", "Bearer "+apiKey)
+					}
+					if rResp, err := p.client.Do(rReq); err == nil {
+						rResp.Body.Close()
+						if rResp.StatusCode == http.StatusBadRequest || rResp.StatusCode == http.StatusUnprocessableEntity || rResp.StatusCode == http.StatusOK {
+							protocols = append(protocols, "rerank")
+						}
+					}
 				}
+
+				suggestedName := suggestProviderName(detectedType, baseURL, serverHeader)
 
 				return &ProbeResult{
 					Type:          detectedType,
@@ -217,6 +245,36 @@ func (p *DownstreamProber) probeAnthropic(ctx context.Context, baseURL, apiKey s
 		"claude-3-opus-20240229",
 	}
 
+	if apiKey != "" && apiKey != "none" {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.anthropic.com/v1/models", nil)
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		resp, err := p.client.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			var parsed struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			if json.Unmarshal(body, &parsed) == nil && len(parsed.Data) > 0 {
+				var list []string
+				for _, m := range parsed.Data {
+					list = append(list, m.ID)
+				}
+				return &ProbeResult{
+					Type:          model.ProviderAnthropic,
+					SuggestedName: "anthropic-claude-direct",
+					Models:        list,
+					Protocols:     []string{"openai_chat", "anthropic_messages"},
+					LatencyMs:     dur,
+					Message:       fmt.Sprintf("已成功连接 Anthropic 官方 API，在线发现 %d 个模型", len(list)),
+				}, nil
+			}
+		}
+	}
+
 	return &ProbeResult{
 		Type:          model.ProviderAnthropic,
 		SuggestedName: "anthropic-claude-direct",
@@ -279,14 +337,70 @@ func inferProviderType(baseURL, serverHeader string, models []string) model.Prov
 	if strings.Contains(lowerURL, "openai.com") {
 		return model.ProviderOpenAI
 	}
-	if strings.Contains(lowerServer, "vllm") {
+	if strings.Contains(lowerURL, "anthropic.com") {
+		return model.ProviderAnthropic
+	}
+	if strings.Contains(lowerURL, "generativelanguage.googleapis.com") {
+		return model.ProviderGemini
+	}
+	if strings.Contains(lowerServer, "vllm") || strings.Contains(lowerURL, ":8000") {
 		return model.ProviderVLLM
 	}
-	if strings.Contains(lowerServer, "sglang") {
+	if strings.Contains(lowerServer, "sglang") || strings.Contains(lowerURL, ":30000") {
 		return model.ProviderSGLang
+	}
+	if strings.Contains(lowerServer, "ollama") || strings.Contains(lowerURL, ":11434") {
+		return model.ProviderOllama
 	}
 
 	return model.ProviderOpenAI
+}
+
+// suggestProviderName creates a clean, recognizable name for the provider.
+func suggestProviderName(detectedType model.ProviderType, baseURL, serverHeader string) string {
+	lowerURL := strings.ToLower(baseURL)
+	lowerServer := strings.ToLower(serverHeader)
+
+	if strings.Contains(lowerServer, "gpustack") || strings.Contains(lowerURL, "gpustack") {
+		return "gpustack-cluster"
+	}
+	if strings.Contains(lowerURL, "deepseek.com") {
+		return "deepseek-direct"
+	}
+	if strings.Contains(lowerURL, "openai.com") {
+		return "openai-official-us"
+	}
+	if strings.Contains(lowerURL, "anthropic.com") {
+		return "anthropic-claude-direct"
+	}
+	if strings.Contains(lowerURL, "googleapis.com") {
+		return "google-gemini-official"
+	}
+	if strings.Contains(lowerURL, "sub2api") {
+		return "sub2api-upstream"
+	}
+	if strings.Contains(lowerURL, ":11434") || strings.Contains(lowerServer, "ollama") {
+		return "ollama-local"
+	}
+	if strings.Contains(lowerServer, "vllm") || strings.Contains(lowerURL, ":8000") {
+		return "vllm-engine"
+	}
+	if strings.Contains(lowerServer, "sglang") || strings.Contains(lowerURL, ":30000") {
+		return "sglang-engine"
+	}
+	if strings.Contains(lowerURL, "localhost") || strings.Contains(lowerURL, "127.0.0.1") || strings.Contains(lowerURL, "192.168.") || strings.Contains(lowerURL, "10.") {
+		return "local-inference-cluster"
+	}
+	return string(detectedType) + "-upstream"
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 // inferProtocols determines supported modalities and protocols based on model names.
@@ -299,26 +413,29 @@ func inferProtocols(models []string) []string {
 
 	for _, m := range models {
 		lower := strings.ToLower(m)
-		if strings.Contains(lower, "dall-e") || strings.Contains(lower, "flux") || strings.Contains(lower, "stable-diffusion") || strings.Contains(lower, "sd") {
+		if strings.Contains(lower, "dall-e") || strings.Contains(lower, "flux") || strings.Contains(lower, "stable-diffusion") || strings.Contains(lower, "sd") || strings.Contains(lower, "midjourney") {
 			protocolsMap["images"] = true
 		}
-		if strings.Contains(lower, "tts") || strings.Contains(lower, "speech") || strings.Contains(lower, "cosyvoice") {
+		if strings.Contains(lower, "tts") || strings.Contains(lower, "speech") || strings.Contains(lower, "cosyvoice") || strings.Contains(lower, "chattts") {
 			protocolsMap["audio_speech"] = true
 		}
-		if strings.Contains(lower, "whisper") || strings.Contains(lower, "transcription") || strings.Contains(lower, "sensevoice") {
+		if strings.Contains(lower, "whisper") || strings.Contains(lower, "transcription") || strings.Contains(lower, "sensevoice") || strings.Contains(lower, "funasr") {
 			protocolsMap["audio_transcription"] = true
 		}
-		if strings.Contains(lower, "sora") || strings.Contains(lower, "cogvideo") || strings.Contains(lower, "kling") || strings.Contains(lower, "video") {
+		if strings.Contains(lower, "sora") || strings.Contains(lower, "cogvideo") || strings.Contains(lower, "kling") || strings.Contains(lower, "video") || strings.Contains(lower, "hunyuan") {
 			protocolsMap["videos"] = true
 		}
 		if strings.Contains(lower, "embed") || strings.Contains(lower, "bge") || strings.Contains(lower, "e5") || strings.Contains(lower, "nomic") || strings.Contains(lower, "voyage") || strings.Contains(lower, "jina") || strings.Contains(lower, "text-embedding") {
 			protocolsMap["embeddings"] = true
 		}
+		if strings.Contains(lower, "rerank") || strings.Contains(lower, "bge-rerank") || strings.Contains(lower, "colbert") || strings.Contains(lower, "gte-rerank") {
+			protocolsMap["rerank"] = true
+		}
 	}
 
 	var list []string
 	// Order canonically
-	ordered := []string{"openai_chat", "openai_text", "anthropic_messages", "embeddings", "images", "audio_speech", "audio_transcription", "videos"}
+	ordered := []string{"openai_chat", "openai_text", "anthropic_messages", "embeddings", "rerank", "images", "audio_speech", "audio_transcription", "videos"}
 	for _, p := range ordered {
 		if protocolsMap[p] {
 			list = append(list, p)

@@ -223,6 +223,67 @@ func (h *MultimodalHandler) HandleAudioTranscriptions(c *gin.Context) {
 	_, _ = io.Copy(c.Writer, resp.Stream)
 }
 
+// HandleAudioTranslations handles audio translation POST /v1/audio/translations.
+func (h *MultimodalHandler) HandleAudioTranslations(c *gin.Context) {
+	modelName := c.PostForm("model")
+	if modelName == "" {
+		modelName = "whisper-1"
+	}
+
+	if !middleware.ValidateModelAllowed(c, modelName) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"message": fmt.Sprintf("Model '%s' is not allowed for your API key", modelName),
+				"type":    "forbidden",
+				"code":    "model_not_allowed",
+			},
+		})
+		return
+	}
+
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read multipart body"})
+		return
+	}
+
+	start := time.Now()
+	upReq := &router.UpstreamRequest{
+		Path:        "/v1/audio/translations",
+		Method:      http.MethodPost,
+		Body:        bodyBytes,
+		ContentType: c.ContentType(),
+		Model:       modelName,
+		Protocol:    "audio_transcription",
+	}
+
+	resp, err := h.dispatcher.DispatchHTTP(c.Request.Context(), upReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	defer resp.Stream.Close()
+
+	dur := time.Since(start)
+	if storage.GlobalAsyncLogger != nil {
+		storage.GlobalAsyncLogger.Record(&storage.UsageLogRecord{
+			VirtualKey: c.GetString("virtual_key"),
+			TenantID:   c.GetString("tenant_id"),
+			Model:      modelName,
+			DurationMs: dur.Milliseconds(),
+			StatusCode: resp.StatusCode,
+		})
+	}
+
+	for k, vals := range resp.Headers {
+		for _, v := range vals {
+			c.Header(k, v)
+		}
+	}
+	c.Status(resp.StatusCode)
+	_, _ = io.Copy(c.Writer, resp.Stream)
+}
+
 // HandleVideoGenerations handles text-to-video POST /v1/videos/generations.
 func (h *MultimodalHandler) HandleVideoGenerations(c *gin.Context) {
 	bodyBytes, err := io.ReadAll(c.Request.Body)

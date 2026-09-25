@@ -51,20 +51,23 @@ func SetupRouter(dispatcher *router.Dispatcher, adminHandler *controlplane.Admin
 	v1.Use(middleware.AuthMiddleware())
 	v1.Use(middleware.RateLimitMiddleware())
 	{
-		// OpenAI ingress (Chat completions + Text completions + Models + Embeddings)
+		// OpenAI ingress (Chat completions + Text completions + Models + Embeddings + Rerank)
 		v1.POST("/chat/completions", handler.HandleChatCompletions)
 		v1.POST("/completions", handler.HandleCompletions)
 		v1.GET("/models", handler.HandleModels)
 		v1.POST("/embeddings", handler.HandleEmbeddings)
+		v1.POST("/rerank", handler.HandleRerank)
 
-		// Anthropic Claude Messages API ingress
+		// Anthropic Claude Messages API ingress + Token Counting
 		v1.POST("/messages", handler.HandleAnthropicMessages)
+		v1.POST("/messages/count_tokens", handler.HandleAnthropicCountTokens)
 
-		// Multimodal Ingress (Image, Audio TTS/STT, Video)
+		// Multimodal Ingress (Image, Audio TTS/STT/Translation, Video)
 		mmHandler := NewMultimodalHandler(dispatcher)
 		v1.POST("/images/generations", mmHandler.HandleImageGenerations)
 		v1.POST("/audio/speech", mmHandler.HandleAudioSpeech)
 		v1.POST("/audio/transcriptions", mmHandler.HandleAudioTranscriptions)
+		v1.POST("/audio/translations", mmHandler.HandleAudioTranslations)
 		v1.POST("/videos/generations", mmHandler.HandleVideoGenerations)
 		v1.GET("/videos/tasks/:id", mmHandler.HandleVideoTask)
 	}

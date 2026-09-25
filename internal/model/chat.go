@@ -6,11 +6,12 @@ import (
 
 // ChatMessage represents a single chat completion message.
 type ChatMessage struct {
-	Role       string          `json:"role"`
-	Content    any             `json:"content"` // can be string or structured content
-	Name       string          `json:"name,omitempty"`
-	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Role             string          `json:"role"`
+	Content          any             `json:"content"` // can be string or structured content
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
 }
 
 // GetContentString returns string content safely.
@@ -93,9 +94,10 @@ type ChatCompletionResponse struct {
 
 // ChunkDelta is the incremental message delta in a stream.
 type ChunkDelta struct {
-	Role      string     `json:"role,omitempty"`
-	Content   string     `json:"content,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role             string     `json:"role,omitempty"`
+	Content          string     `json:"content,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // ChunkChoice is an individual choice in a streaming chunk.
