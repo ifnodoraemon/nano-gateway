@@ -80,19 +80,7 @@ func (d *Dispatcher) GetChannelsForModelAndProtocol(modelName, proto string) []*
 		if proto != "" && !ch.SupportsProtocol(proto) {
 			continue
 		}
-		hasModel := false
-		for _, m := range ch.Models {
-			if m == modelName {
-				hasModel = true
-				break
-			}
-		}
-		if !hasModel && ch.ModelMapping != nil {
-			if _, ok := ch.ModelMapping[modelName]; ok {
-				hasModel = true
-			}
-		}
-		if hasModel {
+		if ch.SupportsModel(modelName) {
 			matched = append(matched, ch)
 		}
 	}

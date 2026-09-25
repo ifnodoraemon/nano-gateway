@@ -1,5 +1,7 @@
 package model
 
+import "strings"
+
 // ProviderType represents the upstream provider category.
 type ProviderType string
 
@@ -53,13 +55,89 @@ func (c *ChannelConfig) SupportsProtocol(proto string) bool {
 	return false
 }
 
+// SupportsModel checks if this channel can service the requested model (supporting cascading models, wildcards, and prefix stripping).
+func (c *ChannelConfig) SupportsModel(requestedModel string) bool {
+	// 1. Exact match or wildcard in Models list
+	for _, m := range c.Models {
+		if m == "*" || m == requestedModel {
+			return true
+		}
+		if strings.HasSuffix(m, "/*") {
+			prefix := strings.TrimSuffix(m, "/*") + "/"
+			if strings.HasPrefix(requestedModel, prefix) {
+				return true
+			}
+		}
+	}
+
+	// 2. Exact match or wildcard in ModelMapping
+	if c.ModelMapping != nil {
+		if _, ok := c.ModelMapping[requestedModel]; ok {
+			return true
+		}
+		for pattern := range c.ModelMapping {
+			if strings.HasSuffix(pattern, "/*") {
+				prefix := strings.TrimSuffix(pattern, "/*") + "/"
+				if strings.HasPrefix(requestedModel, prefix) {
+					return true
+				}
+			}
+		}
+	}
+
+	// 3. Automatic channel name prefix match: e.g. channel "yy" servicing "yy/xxx/xx"
+	chPrefix := c.Name + "/"
+	if strings.HasPrefix(requestedModel, chPrefix) {
+		remainder := strings.TrimPrefix(requestedModel, chPrefix)
+		for _, m := range c.Models {
+			if m == "*" || m == remainder {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // GetUpstreamModel returns the mapped upstream model name if specified, otherwise the requested model.
+// Supports cascading models, unlimited slashes, wildcard prefixes (e.g. "yy/*": "*"), and channel prefix stripping.
 func (c *ChannelConfig) GetUpstreamModel(requestedModel string) string {
 	if c.ModelMapping != nil {
+		// 1. Exact match
 		if actual, ok := c.ModelMapping[requestedModel]; ok && actual != "" {
 			return actual
 		}
+
+		// 2. Pattern / Wildcard prefix match: e.g. "yy/*": "*" or "yy/*": "downstream/*"
+		for pattern, targetPattern := range c.ModelMapping {
+			if strings.HasSuffix(pattern, "/*") {
+				prefix := strings.TrimSuffix(pattern, "/*") + "/"
+				if strings.HasPrefix(requestedModel, prefix) {
+					remainder := strings.TrimPrefix(requestedModel, prefix)
+					if targetPattern == "*" || targetPattern == "" {
+						return remainder
+					}
+					if strings.HasSuffix(targetPattern, "/*") {
+						targetPrefix := strings.TrimSuffix(targetPattern, "/*") + "/"
+						return targetPrefix + remainder
+					}
+					return targetPattern
+				}
+			}
+		}
 	}
+
+	// 3. Automatic channel prefix match: "yy/xxx/xx" -> "xxx/xx"
+	chPrefix := c.Name + "/"
+	if strings.HasPrefix(requestedModel, chPrefix) {
+		remainder := strings.TrimPrefix(requestedModel, chPrefix)
+		for _, m := range c.Models {
+			if m == "*" || m == remainder {
+				return remainder
+			}
+		}
+	}
+
 	return requestedModel
 }
 

@@ -89,8 +89,14 @@ func ValidateModelAllowed(c *gin.Context, requestedModel string) bool {
 	}
 
 	for _, m := range vk.AllowedModels {
-		if m == requestedModel {
+		if m == "*" || m == requestedModel {
 			return true
+		}
+		if strings.HasSuffix(m, "/*") {
+			prefix := strings.TrimSuffix(m, "/*") + "/"
+			if strings.HasPrefix(requestedModel, prefix) {
+				return true
+			}
 		}
 	}
 	return false
