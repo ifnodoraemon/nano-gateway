@@ -10,6 +10,7 @@ import (
 	"github.com/ifnodoraemon/nano-gateway/internal/middleware"
 	"github.com/ifnodoraemon/nano-gateway/internal/model"
 	"github.com/ifnodoraemon/nano-gateway/internal/router"
+	"github.com/ifnodoraemon/nano-gateway/internal/storage"
 	"github.com/ifnodoraemon/nano-gateway/internal/telemetry"
 )
 
@@ -78,6 +79,26 @@ func (h *Handler) HandleChatCompletions(c *gin.Context) {
 			})
 			return
 		}
+		dur := time.Since(start)
+		pTokens := 0
+		cTokens := 0
+		if resp.Usage != nil {
+			pTokens = resp.Usage.PromptTokens
+			cTokens = resp.Usage.CompletionTokens
+		}
+		telemetry.GlobalMetrics.RecordRequest(true, dur, pTokens, cTokens)
+		if storage.GlobalAsyncLogger != nil {
+			storage.GlobalAsyncLogger.Record(&storage.UsageLogRecord{
+				VirtualKey:       c.GetString("virtual_key"),
+				TenantID:         c.GetString("tenant_id"),
+				Model:            req.Model,
+				PromptTokens:     pTokens,
+				CompletionTokens: cTokens,
+				TotalTokens:      pTokens + cTokens,
+				DurationMs:       dur.Milliseconds(),
+				StatusCode:       http.StatusOK,
+			})
+		}
 		c.JSON(http.StatusOK, resp)
 		return
 	}
@@ -110,8 +131,27 @@ func (h *Handler) HandleChatCompletions(c *gin.Context) {
 	flusher.Flush()
 
 	firstTokenRecorded := false
+	var ttftDuration time.Duration
 	totalPromptTokens := 0
 	totalCompTokens := 0
+
+	recordStreamEnd := func() {
+		dur := time.Since(start)
+		telemetry.GlobalMetrics.RecordRequest(true, dur, totalPromptTokens, totalCompTokens)
+		if storage.GlobalAsyncLogger != nil {
+			storage.GlobalAsyncLogger.Record(&storage.UsageLogRecord{
+				VirtualKey:       c.GetString("virtual_key"),
+				TenantID:         c.GetString("tenant_id"),
+				Model:            req.Model,
+				PromptTokens:     totalPromptTokens,
+				CompletionTokens: totalCompTokens,
+				TotalTokens:      totalPromptTokens + totalCompTokens,
+				DurationMs:       dur.Milliseconds(),
+				TTFTMs:           ttftDuration.Milliseconds(),
+				StatusCode:       http.StatusOK,
+			})
+		}
+	}
 
 	w := c.Writer
 	for {
@@ -122,8 +162,7 @@ func (h *Handler) HandleChatCompletions(c *gin.Context) {
 			if !open {
 				fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
-				dur := time.Since(start)
-				telemetry.GlobalMetrics.RecordRequest(true, dur, totalPromptTokens, totalCompTokens)
+				recordStreamEnd()
 				return
 			}
 
@@ -144,8 +183,7 @@ func (h *Handler) HandleChatCompletions(c *gin.Context) {
 			if event.IsDone {
 				fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
-				dur := time.Since(start)
-				telemetry.GlobalMetrics.RecordRequest(true, dur, totalPromptTokens, totalCompTokens)
+				recordStreamEnd()
 				return
 			}
 
@@ -153,8 +191,8 @@ func (h *Handler) HandleChatCompletions(c *gin.Context) {
 				if !firstTokenRecorded && len(event.Chunk.Choices) > 0 {
 					delta := event.Chunk.Choices[0].Delta
 					if delta.Content != "" || delta.Role != "" {
-						ttft := time.Since(start)
-						telemetry.GlobalMetrics.RecordTTFT(ttft)
+						ttftDuration = time.Since(start)
+						telemetry.GlobalMetrics.RecordTTFT(ttftDuration)
 						firstTokenRecorded = true
 					}
 				}

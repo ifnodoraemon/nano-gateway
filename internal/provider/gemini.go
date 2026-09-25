@@ -22,9 +22,7 @@ type GeminiProvider struct {
 // NewGeminiProvider creates a Gemini provider instance.
 func NewGeminiProvider(client *http.Client) *GeminiProvider {
 	if client == nil {
-		client = &http.Client{
-			Timeout: 180 * time.Second,
-		}
+		client = SharedDefaultHTTPClient
 	}
 	return &GeminiProvider{client: client}
 }

@@ -84,12 +84,21 @@ func main() {
 	// Initialize Data Plane Dispatcher
 	dispatcher := router.NewDispatcher(nil)
 
+	// Initialize Async Usage Logger for zero-latency audit logs
+	asyncLogger := storage.InitAsyncLogger(repo, 10000, 100, 500*time.Millisecond)
+	defer asyncLogger.Stop()
+
 	// Initialize Control Plane Synchronizer & load state into Data Plane memory
 	synchronizer := controlplane.NewSynchronizer(repo, dispatcher)
 	if err := synchronizer.ReloadFromDB(); err != nil {
 		telemetry.Logger.Warn("initial sync from db failed, using config file defaults", "error", err.Error())
 		dispatcher.UpdateChannels(cfg.Channels)
 	}
+
+	// HA Multi-Replica Periodic Auto-Sync (10s interval)
+	stopSync := make(chan struct{})
+	defer close(stopSync)
+	synchronizer.StartPeriodicSync(10*time.Second, stopSync)
 
 	// Initialize Admin Handler
 	adminHandler := controlplane.NewAdminHandler(repo, synchronizer, dispatcher)

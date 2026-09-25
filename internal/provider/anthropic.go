@@ -22,9 +22,7 @@ type AnthropicProvider struct {
 // NewAnthropicProvider creates a new Anthropic provider.
 func NewAnthropicProvider(client *http.Client) *AnthropicProvider {
 	if client == nil {
-		client = &http.Client{
-			Timeout: 180 * time.Second,
-		}
+		client = SharedDefaultHTTPClient
 	}
 	return &AnthropicProvider{client: client}
 }

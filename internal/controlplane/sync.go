@@ -3,6 +3,7 @@ package controlplane
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ifnodoraemon/nano-gateway/internal/config"
 	"github.com/ifnodoraemon/nano-gateway/internal/router"
@@ -54,3 +55,24 @@ func (s *Synchronizer) ReloadFromDB() error {
 
 	return nil
 }
+
+// StartPeriodicSync runs a background worker to periodically reload configuration from DB,
+// enabling automatic hot sync across multi-replica HA clusters.
+func (s *Synchronizer) StartPeriodicSync(interval time.Duration, stopCh <-chan struct{}) {
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = s.ReloadFromDB()
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+}
+

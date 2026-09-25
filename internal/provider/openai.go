@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/ifnodoraemon/nano-gateway/internal/model"
 )
@@ -22,9 +21,7 @@ type OpenAIProvider struct {
 // NewOpenAIProvider creates an OpenAI compatible provider instance.
 func NewOpenAIProvider(client *http.Client) *OpenAIProvider {
 	if client == nil {
-		client = &http.Client{
-			Timeout: 180 * time.Second,
-		}
+		client = SharedDefaultHTTPClient
 	}
 	return &OpenAIProvider{client: client}
 }

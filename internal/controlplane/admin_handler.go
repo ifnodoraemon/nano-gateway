@@ -37,6 +37,11 @@ func (h *AdminHandler) ListChannels(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if h.dispatcher != nil {
+		for _, ch := range channels {
+			ch.BreakerStatus = h.dispatcher.GetBreakerStatus(ch.Name)
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": channels})
 }
 

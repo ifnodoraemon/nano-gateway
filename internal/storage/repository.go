@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -17,10 +18,12 @@ type ChannelRecord struct {
 	APIKey         string             `json:"api_key"`
 	Models         []string           `json:"models"`
 	ModelMapping   map[string]string  `json:"model_mapping"`
+	Protocols      []string           `json:"protocols,omitempty"`
 	Priority       int                `json:"priority"`
 	Weight         int                `json:"weight"`
 	TimeoutSeconds int                `json:"timeout_seconds"`
 	Status         string             `json:"status"` // active, inactive
+	BreakerStatus  string             `json:"breaker_status,omitempty"`
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
 }
@@ -80,7 +83,7 @@ func NewRepository(db *DB) *Repository {
 
 // ListChannels returns all channels.
 func (r *Repository) ListChannels() ([]*ChannelRecord, error) {
-	rows, err := r.db.Query(`SELECT id, name, type, base_url, api_key, models, model_mapping, priority, weight, timeout_seconds, status, created_at, updated_at FROM channels ORDER BY priority ASC, id ASC`)
+	rows, err := r.db.Query(`SELECT id, name, type, base_url, api_key, models, model_mapping, protocols, priority, weight, timeout_seconds, status, created_at, updated_at FROM channels ORDER BY priority ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -89,14 +92,19 @@ func (r *Repository) ListChannels() ([]*ChannelRecord, error) {
 	var list []*ChannelRecord
 	for rows.Next() {
 		var rec ChannelRecord
-		var modelsJSON, mappingJSON string
-		err := rows.Scan(&rec.ID, &rec.Name, &rec.Type, &rec.BaseURL, &rec.APIKey, &modelsJSON, &mappingJSON, &rec.Priority, &rec.Weight, &rec.TimeoutSeconds, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt)
+		var modelsJSON, mappingJSON, protocolsJSON sql.NullString
+		err := rows.Scan(&rec.ID, &rec.Name, &rec.Type, &rec.BaseURL, &rec.APIKey, &modelsJSON, &mappingJSON, &protocolsJSON, &rec.Priority, &rec.Weight, &rec.TimeoutSeconds, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt)
 		if err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal([]byte(modelsJSON), &rec.Models)
-		if mappingJSON != "" {
-			_ = json.Unmarshal([]byte(mappingJSON), &rec.ModelMapping)
+		if modelsJSON.Valid && modelsJSON.String != "" {
+			_ = json.Unmarshal([]byte(modelsJSON.String), &rec.Models)
+		}
+		if mappingJSON.Valid && mappingJSON.String != "" {
+			_ = json.Unmarshal([]byte(mappingJSON.String), &rec.ModelMapping)
+		}
+		if protocolsJSON.Valid && protocolsJSON.String != "" {
+			_ = json.Unmarshal([]byte(protocolsJSON.String), &rec.Protocols)
 		}
 		list = append(list, &rec)
 	}
@@ -107,6 +115,7 @@ func (r *Repository) ListChannels() ([]*ChannelRecord, error) {
 func (r *Repository) CreateChannel(rec *ChannelRecord) error {
 	modelsBytes, _ := json.Marshal(rec.Models)
 	mappingBytes, _ := json.Marshal(rec.ModelMapping)
+	protocolsBytes, _ := json.Marshal(rec.Protocols)
 	if rec.Status == "" {
 		rec.Status = "active"
 	}
@@ -120,8 +129,8 @@ func (r *Repository) CreateChannel(rec *ChannelRecord) error {
 		rec.TimeoutSeconds = 60
 	}
 
-	res, err := r.db.Exec(`INSERT INTO channels (name, type, base_url, api_key, models, model_mapping, priority, weight, timeout_seconds, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-		rec.Name, rec.Type, rec.BaseURL, rec.APIKey, string(modelsBytes), string(mappingBytes), rec.Priority, rec.Weight, rec.TimeoutSeconds, rec.Status)
+	res, err := r.db.Exec(`INSERT INTO channels (name, type, base_url, api_key, models, model_mapping, protocols, priority, weight, timeout_seconds, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+		rec.Name, rec.Type, rec.BaseURL, rec.APIKey, string(modelsBytes), string(mappingBytes), string(protocolsBytes), rec.Priority, rec.Weight, rec.TimeoutSeconds, rec.Status)
 	if err != nil {
 		return err
 	}
@@ -133,9 +142,10 @@ func (r *Repository) CreateChannel(rec *ChannelRecord) error {
 func (r *Repository) UpdateChannel(rec *ChannelRecord) error {
 	modelsBytes, _ := json.Marshal(rec.Models)
 	mappingBytes, _ := json.Marshal(rec.ModelMapping)
+	protocolsBytes, _ := json.Marshal(rec.Protocols)
 
-	_, err := r.db.Exec(`UPDATE channels SET name=?, type=?, base_url=?, api_key=?, models=?, model_mapping=?, priority=?, weight=?, timeout_seconds=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-		rec.Name, rec.Type, rec.BaseURL, rec.APIKey, string(modelsBytes), string(mappingBytes), rec.Priority, rec.Weight, rec.TimeoutSeconds, rec.Status, rec.ID)
+	_, err := r.db.Exec(`UPDATE channels SET name=?, type=?, base_url=?, api_key=?, models=?, model_mapping=?, protocols=?, priority=?, weight=?, timeout_seconds=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		rec.Name, rec.Type, rec.BaseURL, rec.APIKey, string(modelsBytes), string(mappingBytes), string(protocolsBytes), rec.Priority, rec.Weight, rec.TimeoutSeconds, rec.Status, rec.ID)
 	return err
 }
 
@@ -235,6 +245,7 @@ func (r *Repository) ToModelChannels() ([]model.ChannelConfig, error) {
 			APIKey:         rec.APIKey,
 			Models:         rec.Models,
 			ModelMapping:   rec.ModelMapping,
+			Protocols:      rec.Protocols,
 			Priority:       rec.Priority,
 			Weight:         rec.Weight,
 			TimeoutSeconds: rec.TimeoutSeconds,

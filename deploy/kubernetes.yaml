@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nano-gateway
+  namespace: default
+  labels:
+    app: nano-gateway
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nano-gateway
+  template:
+    metadata:
+      labels:
+        app: nano-gateway
+    spec:
+      containers:
+      - name: gateway
+        image: ghcr.io/ifnodoraemon/nano-gateway:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/app/nano-gateway", "-config", "/etc/nano-gateway/config.yaml", "-db", "/data/gateway.db"]
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 4000m
+            memory: 4Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        volumeMounts:
+        - name: data-vol
+          mountPath: /data
+        - name: config-vol
+          mountPath: /etc/nano-gateway
+      volumes:
+      - name: data-vol
+        persistentVolumeClaim:
+          claimName: nano-gateway-pvc
+      - name: config-vol
+        configMap:
+          name: nano-gateway-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nano-gateway-svc
+spec:
+  type: ClusterIP
+  selector:
+    app: nano-gateway
+  ports:
+  - port: 8080
+    targetPort: 8080

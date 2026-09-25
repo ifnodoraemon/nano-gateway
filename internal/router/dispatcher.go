@@ -14,18 +14,20 @@ import (
 
 // Dispatcher routes requests to appropriate providers with intelligent fallback.
 type Dispatcher struct {
-	mu        sync.RWMutex
-	channels  []model.ChannelConfig
-	providers map[model.ProviderType]provider.Provider
-	rrIndices map[string]int // round-robin index per model
+	mu             sync.RWMutex
+	channels       []model.ChannelConfig
+	providers      map[model.ProviderType]provider.Provider
+	rrIndices      map[string]int // round-robin index per model
+	circuitBreaker *CircuitBreaker
 }
 
 // NewDispatcher creates a new Dispatcher instance.
 func NewDispatcher(channels []model.ChannelConfig) *Dispatcher {
 	d := &Dispatcher{
-		channels:  channels,
-		providers: make(map[model.ProviderType]provider.Provider),
-		rrIndices: make(map[string]int),
+		channels:       channels,
+		providers:      make(map[model.ProviderType]provider.Provider),
+		rrIndices:      make(map[string]int),
+		circuitBreaker: NewCircuitBreaker(3, 30*time.Second),
 	}
 
 	// Register default providers
@@ -35,6 +37,9 @@ func NewDispatcher(channels []model.ChannelConfig) *Dispatcher {
 	d.providers[model.ProviderVLLM] = openAIProv
 	d.providers[model.ProviderSGLang] = openAIProv
 	d.providers[model.ProviderOllama] = openAIProv
+	d.providers[model.ProviderSub2API] = openAIProv
+	d.providers[model.ProviderGPUStack] = openAIProv
+	d.providers[model.ProviderCustom] = openAIProv
 
 	anthropicProv := provider.NewAnthropicProvider(nil)
 	d.providers[model.ProviderAnthropic] = anthropicProv
@@ -61,12 +66,20 @@ func (d *Dispatcher) UpdateChannels(channels []model.ChannelConfig) {
 
 // GetChannelsForModel returns matching channels for a given model, sorted by priority.
 func (d *Dispatcher) GetChannelsForModel(modelName string) []*model.ChannelConfig {
+	return d.GetChannelsForModelAndProtocol(modelName, "")
+}
+
+// GetChannelsForModelAndProtocol returns matching channels for a given model and protocol.
+func (d *Dispatcher) GetChannelsForModelAndProtocol(modelName, proto string) []*model.ChannelConfig {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	var matched []*model.ChannelConfig
 	for i := range d.channels {
 		ch := &d.channels[i]
+		if proto != "" && !ch.SupportsProtocol(proto) {
+			continue
+		}
 		hasModel := false
 		for _, m := range ch.Models {
 			if m == modelName {
@@ -120,13 +133,22 @@ func (d *Dispatcher) GetAllSupportedModels() []string {
 
 // Dispatch executes non-streaming chat with automatic fallback.
 func (d *Dispatcher) Dispatch(ctx context.Context, req *model.ChatCompletionRequest) (*model.ChatCompletionResponse, error) {
-	channels := d.GetChannelsForModel(req.Model)
+	channels := d.GetChannelsForModelAndProtocol(req.Model, "chat")
 	if len(channels) == 0 {
-		return nil, fmt.Errorf("no upstream channel available for requested model '%s'", req.Model)
+		channels = d.GetChannelsForModel(req.Model)
+	}
+	if len(channels) == 0 {
+		return nil, fmt.Errorf("no upstream provider available for requested model '%s'", req.Model)
 	}
 
 	var lastErr error
 	for i, ch := range channels {
+		// High-Availability Circuit Breaker: fail fast if upstream is down
+		if !d.circuitBreaker.CanExecute(ch.Name) {
+			telemetry.Logger.Warn("circuit breaker is OPEN, bypassing dead upstream", "channel", ch.Name)
+			continue
+		}
+
 		d.mu.RLock()
 		prov, exists := d.providers[ch.Type]
 		d.mu.RUnlock()
@@ -147,6 +169,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req *model.ChatCompletionRequ
 		start := time.Now()
 		resp, err := prov.ChatComplete(ctx, req, ch)
 		if err == nil {
+			d.circuitBreaker.RecordSuccess(ch.Name)
 			dur := time.Since(start)
 			promptTokens := 0
 			compTokens := 0
@@ -163,6 +186,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req *model.ChatCompletionRequ
 			return resp, nil
 		}
 
+		d.circuitBreaker.RecordFailure(ch.Name)
 		lastErr = err
 		telemetry.GlobalMetrics.RecordFallback()
 		telemetry.Logger.Warn("channel execution failed, triggering fallback",
@@ -178,13 +202,22 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req *model.ChatCompletionRequ
 
 // DispatchStream executes streaming chat with Safe Fallback Window before the first token.
 func (d *Dispatcher) DispatchStream(ctx context.Context, req *model.ChatCompletionRequest) (<-chan *model.StreamEvent, error) {
-	channels := d.GetChannelsForModel(req.Model)
+	channels := d.GetChannelsForModelAndProtocol(req.Model, "chat")
 	if len(channels) == 0 {
-		return nil, fmt.Errorf("no upstream channel available for requested model '%s'", req.Model)
+		channels = d.GetChannelsForModel(req.Model)
+	}
+	if len(channels) == 0 {
+		return nil, fmt.Errorf("no upstream provider available for requested model '%s'", req.Model)
 	}
 
 	var lastErr error
 	for i, ch := range channels {
+		// High-Availability Circuit Breaker: fail fast if upstream is down
+		if !d.circuitBreaker.CanExecute(ch.Name) {
+			telemetry.Logger.Warn("circuit breaker is OPEN, bypassing dead upstream stream", "channel", ch.Name)
+			continue
+		}
+
 		d.mu.RLock()
 		prov, exists := d.providers[ch.Type]
 		d.mu.RUnlock()
@@ -202,6 +235,7 @@ func (d *Dispatcher) DispatchStream(ctx context.Context, req *model.ChatCompleti
 
 		streamChan, err := prov.ChatCompleteStream(ctx, req, ch)
 		if err != nil {
+			d.circuitBreaker.RecordFailure(ch.Name)
 			lastErr = err
 			telemetry.GlobalMetrics.RecordFallback()
 			telemetry.Logger.Warn("stream connection failed, trying next channel",
@@ -215,12 +249,14 @@ func (d *Dispatcher) DispatchStream(ctx context.Context, req *model.ChatCompleti
 		select {
 		case firstEvent, ok := <-streamChan:
 			if !ok {
+				d.circuitBreaker.RecordFailure(ch.Name)
 				lastErr = fmt.Errorf("channel %s closed stream without events", ch.Name)
 				telemetry.GlobalMetrics.RecordFallback()
 				continue
 			}
 
 			if firstEvent.Err != nil {
+				d.circuitBreaker.RecordFailure(ch.Name)
 				lastErr = firstEvent.Err
 				telemetry.GlobalMetrics.RecordFallback()
 				telemetry.Logger.Warn("channel failed before first valid token, falling back",
@@ -230,7 +266,10 @@ func (d *Dispatcher) DispatchStream(ctx context.Context, req *model.ChatCompleti
 				continue
 			}
 
-			// First token healthy! Wrap and return combined stream
+			// First token healthy! Mark healthy in circuit breaker
+			d.circuitBreaker.RecordSuccess(ch.Name)
+
+			// Wrap and return combined stream
 			outChan := make(chan *model.StreamEvent, 64)
 			go func(first *model.StreamEvent, in <-chan *model.StreamEvent) {
 				defer close(outChan)
@@ -243,6 +282,7 @@ func (d *Dispatcher) DispatchStream(ctx context.Context, req *model.ChatCompleti
 			return outChan, nil
 
 		case <-time.After(15 * time.Second):
+			d.circuitBreaker.RecordFailure(ch.Name)
 			lastErr = fmt.Errorf("channel %s timed out waiting for first token", ch.Name)
 			telemetry.GlobalMetrics.RecordFallback()
 			telemetry.Logger.Warn("first token timeout, falling back", "channel", ch.Name)
@@ -255,3 +295,12 @@ func (d *Dispatcher) DispatchStream(ctx context.Context, req *model.ChatCompleti
 
 	return nil, fmt.Errorf("all channels failed for stream request on model %s. Last error: %w", req.Model, lastErr)
 }
+
+// GetBreakerStatus returns the circuit breaker status of a channel.
+func (d *Dispatcher) GetBreakerStatus(name string) string {
+	if d.circuitBreaker == nil {
+		return "CLOSED"
+	}
+	return d.circuitBreaker.GetStatus(name).String()
+}
+
