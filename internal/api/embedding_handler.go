@@ -1,0 +1,90 @@
+package api
+
+import (
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/ifnodoraemon/nano-gateway/internal/middleware"
+	"github.com/ifnodoraemon/nano-gateway/internal/model"
+	"github.com/ifnodoraemon/nano-gateway/internal/storage"
+)
+
+// HandleEmbeddings handles POST /v1/embeddings.
+func (h *Handler) HandleEmbeddings(c *gin.Context) {
+	var req model.EmbeddingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"message": fmt.Sprintf("Invalid JSON request body: %v", err),
+				"type":    "invalid_request_error",
+				"code":    "invalid_payload",
+			},
+		})
+		return
+	}
+
+	if req.Model == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"message": "Missing 'model' field in request body",
+				"type":    "invalid_request_error",
+				"code":    "missing_model",
+			},
+		})
+		return
+	}
+
+	if req.Input == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"message": "Missing 'input' field in request body",
+				"type":    "invalid_request_error",
+				"code":    "missing_input",
+			},
+		})
+		return
+	}
+
+	// Validate authorization for requested model
+	if !middleware.ValidateModelAllowed(c, req.Model) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"message": fmt.Sprintf("Your API key is not permitted to access model '%s'", req.Model),
+				"type":    "forbidden",
+				"code":    "model_not_allowed",
+			},
+		})
+		return
+	}
+
+	start := time.Now()
+	resp, err := h.dispatcher.DispatchEmbedding(c.Request.Context(), &req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"message": err.Error(),
+				"type":    "gateway_error",
+				"code":    "upstream_failure",
+			},
+		})
+		return
+	}
+
+	dur := time.Since(start)
+	if storage.GlobalAsyncLogger != nil {
+		storage.GlobalAsyncLogger.Record(&storage.UsageLogRecord{
+			VirtualKey:       c.GetString("virtual_key"),
+			TenantID:         c.GetString("tenant_id"),
+			Model:            req.Model,
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: 0,
+			TotalTokens:      resp.Usage.TotalTokens,
+			DurationMs:       dur.Milliseconds(),
+			StatusCode:       http.StatusOK,
+		})
+	}
+
+	c.JSON(http.StatusOK, resp)
+}

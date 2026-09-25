@@ -55,7 +55,7 @@ export default function App() {
     weight: 10,
     models_str: '',
     mapping_str: '',
-    protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'images', 'audio_speech', 'audio_transcription', 'videos'],
+    protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'embeddings', 'images', 'audio_speech', 'audio_transcription', 'videos'],
   });
 
   const [probing, setProbing] = useState(false);
@@ -71,7 +71,7 @@ export default function App() {
   const [testingId, setTestingId] = useState(null);
 
   // Playground Modality Switcher
-  const [playModality, setPlayModality] = useState('chat'); // 'chat' | 'images' | 'audio_speech' | 'audio_transcription' | 'videos'
+  const [playModality, setPlayModality] = useState('chat'); // 'chat' | 'images' | 'audio_speech' | 'audio_transcription' | 'videos' | 'embeddings'
   const [playApiKey, setPlayApiKey] = useState('');
   const [playLoading, setPlayLoading] = useState(false);
   const [playDurationMs, setPlayDurationMs] = useState(0);
@@ -112,6 +112,12 @@ export default function App() {
   const [videoTaskStatus, setVideoTaskStatus] = useState('');
   const [videoResultUrl, setVideoResultUrl] = useState('');
   const [videoPollCount, setVideoPollCount] = useState(0);
+
+  // 6. Vector Embedding state
+  const [embedModel, setEmbedModel] = useState('text-embedding-3-small');
+  const [embedInput, setEmbedInput] = useState('Google DeepMind 团队打造的下一代超高性能 AI 原生网关，全双工零内存拷贝分发');
+  const [embedResult, setEmbedResult] = useState(null);
+  const [embedDim, setEmbedDim] = useState(0);
 
   // Docs tab category
   const [docsSection, setDocsSection] = useState('quickstart');
@@ -759,6 +765,49 @@ export default function App() {
     }
   };
 
+  // 6. Vector Embedding Execution
+  const handleGenerateEmbedding = async () => {
+    if (!embedInput.trim()) return;
+    setPlayLoading(true);
+    setEmbedResult(null);
+    setEmbedDim(0);
+    setPlayOutput('');
+    setPlayDurationMs(0);
+    const start = Date.now();
+
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (playApiKey) {
+        headers['Authorization'] = `Bearer ${playApiKey}`;
+      }
+      const lines = embedInput.split('\n').map(l => l.trim()).filter(Boolean);
+      const inputPayload = lines.length > 1 ? lines : embedInput;
+
+      const res = await fetch('/v1/embeddings', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: embedModel,
+          input: inputPayload,
+        }),
+      });
+      setPlayDurationMs(Date.now() - start);
+      const data = await res.json();
+      if (!res.ok) {
+        setPlayOutput(`向量化请求失败 (${res.status}):\n${JSON.stringify(data, null, 2)}`);
+      } else {
+        const firstEmb = data.data?.[0]?.embedding || [];
+        setEmbedResult(data);
+        setEmbedDim(firstEmb.length);
+        setPlayOutput(JSON.stringify(data, null, 2));
+      }
+    } catch (e) {
+      setPlayOutput(`向量化网络异常: ${e.message}`);
+    } finally {
+      setPlayLoading(false);
+    }
+  };
+
   const filteredLogs = logs.filter(l => {
     if (!logFilter) return true;
     const f = logFilter.toLowerCase();
@@ -1398,6 +1447,18 @@ export default function App() {
                   <Video className="w-4 h-4" />
                   <span>🎬 视频生成 (Videos)</span>
                 </button>
+
+                <button
+                  onClick={() => setPlayModality('embeddings')}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-sm font-semibold transition ${
+                    playModality === 'embeddings'
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <Cpu className="w-4 h-4" />
+                  <span>🧠 向量特征 (Embeddings)</span>
+                </button>
               </div>
 
               {/* Modality Layout: Controls + Output */}
@@ -1413,6 +1474,7 @@ export default function App() {
                         {playModality === 'audio_speech' && '语音合成参数 (/v1/audio/speech)'}
                         {playModality === 'audio_transcription' && '语音识别参数 (/v1/audio/transcriptions)'}
                         {playModality === 'videos' && '视频生成参数 (/v1/videos)'}
+                        {playModality === 'embeddings' && '向量化特征参数 (/v1/embeddings)'}
                       </span>
                     </h3>
                     <span className="text-xs px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md font-mono">Live</span>
@@ -1633,6 +1695,31 @@ export default function App() {
                     </>
                   )}
 
+                  {/* 6. EMBEDDINGS CONTROLS */}
+                  {playModality === 'embeddings' && (
+                    <>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">向量模型标识 (Model)</label>
+                        <input
+                          value={embedModel}
+                          onChange={(e) => setEmbedModel(e.target.value)}
+                          placeholder="text-embedding-3-small, bge-m3, nomic-embed-text"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-800 focus:outline-none focus:border-emerald-500 focus:bg-white font-mono"
+                        />
+                      </div>
+
+                      <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs text-emerald-900 space-y-1">
+                        <span className="font-bold flex items-center space-x-1">
+                          <Cpu className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>向量化特性说明:</span>
+                        </span>
+                        <p className="text-[11px] leading-relaxed text-emerald-800">
+                          支持单行文本或多行批量输入。网关将无缝对接下游向量引擎（GPUStack、vLLM、Ollama、Gemini 或 OpenAI），输出高维浮点密集嵌入并统计 Token 消耗。
+                        </p>
+                      </div>
+                    </>
+                  )}
+
                   {/* Telemetry Footer */}
                   <div className="pt-4 border-t border-slate-100 text-xs text-slate-500 space-y-2">
                     {playModality === 'chat' && (
@@ -1828,6 +1915,78 @@ export default function App() {
                         )}
                       </div>
                     )}
+
+                    {/* Embeddings Result */}
+                    {playModality === 'embeddings' && (
+                      <div className="h-full flex flex-col justify-between">
+                        {embedResult ? (
+                          <div className="space-y-4">
+                            <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-200">
+                              <div className="flex items-center space-x-3 text-xs">
+                                <span className="font-semibold text-slate-700">特征维度:</span>
+                                <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-mono font-bold rounded border border-emerald-200">
+                                  {embedDim} 维
+                                </span>
+                                <span className="font-semibold text-slate-700">条数:</span>
+                                <span className="font-mono font-bold text-slate-900">
+                                  {embedResult.data?.length || 1} 条
+                                </span>
+                                {embedResult.usage && (
+                                  <>
+                                    <span className="font-semibold text-slate-700">Prompt Tokens:</span>
+                                    <span className="font-mono font-bold text-indigo-600">
+                                      {embedResult.usage.prompt_tokens}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => copyToClipboard(JSON.stringify(embedResult.data, null, 2))}
+                                className="px-3 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg text-xs font-medium flex items-center space-x-1"
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>复制向量数据</span>
+                              </button>
+                            </div>
+
+                            {/* Visual Vector Preview */}
+                            <div className="bg-white p-4 rounded-xl border border-slate-200 space-y-2">
+                              <span className="text-xs font-bold text-slate-700 block">首条特征前 16 维数值热度预览:</span>
+                              <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5 font-mono text-[11px]">
+                                {(embedResult.data?.[0]?.embedding || []).slice(0, 16).map((val, idx) => (
+                                  <div
+                                    key={idx}
+                                    className={`p-1.5 rounded text-center font-semibold truncate ${
+                                      val >= 0
+                                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-100'
+                                        : 'bg-rose-50 text-rose-800 border border-rose-100'
+                                    }`}
+                                    title={`维度 #${idx}: ${val}`}
+                                  >
+                                    {val.toFixed(4)}
+                                  </div>
+                                ))}
+                              </div>
+                              <span className="text-[10px] text-slate-400 block pt-1">
+                                绿色表示正向权重分量，粉色表示负向权重分量（共 {embedDim} 个浮点数值）
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-slate-400 text-center py-32 font-sans flex flex-col items-center justify-center space-y-2">
+                            <Cpu className="w-8 h-8 text-emerald-400 stroke-1" />
+                            <span>在下方输入待向量化文本，点击「生成向量」预览高维特征向量与维度统计</span>
+                          </div>
+                        )}
+
+                        {playOutput && (
+                          <details className="w-full mt-4 text-xs font-mono bg-white p-3 rounded-xl border border-slate-200">
+                            <summary className="cursor-pointer text-slate-500 font-semibold">查看接口完整 JSON 响应</summary>
+                            <pre className="mt-2 text-slate-700 whitespace-pre-wrap max-h-48 overflow-y-auto">{playOutput}</pre>
+                          </details>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Input & Action Bar */}
@@ -1922,6 +2081,29 @@ export default function App() {
                         >
                           {playLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Video className="w-4 h-4" />}
                           <span>创建视频任务</span>
+                        </button>
+                      </>
+                    )}
+
+                    {playModality === 'embeddings' && (
+                      <>
+                        <textarea
+                          rows={2}
+                          value={embedInput}
+                          onChange={(e) => setEmbedInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && e.ctrlKey) handleGenerateEmbedding();
+                          }}
+                          placeholder="输入待向量化文本，支持换行批量输入... (Ctrl+Enter 发送)"
+                          className="flex-1 bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm text-slate-800 focus:outline-none focus:border-emerald-500 focus:bg-white resize-none"
+                        />
+                        <button
+                          onClick={handleGenerateEmbedding}
+                          disabled={playLoading || !embedInput.trim()}
+                          className="px-6 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl font-semibold flex items-center justify-center space-x-2 transition shadow-sm text-sm"
+                        >
+                          {playLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                          <span>生成向量</span>
                         </button>
                       </>
                     )}
@@ -2105,6 +2287,15 @@ file=@recording.mp3; model=whisper-1`}
                         <pre className="mt-1 font-mono text-slate-700">
 {`POST /v1/videos/generations -> 返回 {"task_id": "task_xxx", "status": "PENDING"}
 GET /v1/videos/tasks/:id    -> 轮询状态直到 SUCCESS 并返回 video_url`}
+                        </pre>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                        <span className="font-bold text-emerald-700">🧠 5. 文本向量化 Embeddings (/v1/embeddings)</span>
+                        <pre className="mt-1 font-mono text-slate-700">
+{`POST /v1/embeddings
+{"model": "text-embedding-3-small", "input": "企业级超高性能大模型网关"}
+(支持单文本或数组批量输入，自动适配 GPUStack、vLLM、Ollama、Gemini 与 OpenAI 原生接口)`}
                         </pre>
                       </div>
                     </div>
@@ -2423,6 +2614,15 @@ helm install nano-gateway ./helm/nano-gateway -n gateway --create-namespace
                       className="rounded border-slate-300 text-indigo-600 focus:ring-0"
                     />
                     <span>🎙️ 语音识别 STT (/v1/audio/transcriptions)</span>
+                  </label>
+                  <label className="flex items-center space-x-2 text-slate-700 cursor-pointer p-2 rounded-lg hover:bg-slate-50 border border-slate-100">
+                    <input
+                      type="checkbox"
+                      checked={newChannel.protocols.includes('embeddings')}
+                      onChange={() => toggleProtocol('embeddings')}
+                      className="rounded border-slate-300 text-indigo-600 focus:ring-0"
+                    />
+                    <span>🧠 文本向量 Embedding (/v1/embeddings)</span>
                   </label>
                   <label className="flex items-center space-x-2 text-slate-700 cursor-pointer p-2 rounded-lg hover:bg-slate-50 border border-slate-100 col-span-2">
                     <input

@@ -51,10 +51,11 @@ func SetupRouter(dispatcher *router.Dispatcher, adminHandler *controlplane.Admin
 	v1.Use(middleware.AuthMiddleware())
 	v1.Use(middleware.RateLimitMiddleware())
 	{
-		// OpenAI ingress (Chat completions + Text completions + Models)
+		// OpenAI ingress (Chat completions + Text completions + Models + Embeddings)
 		v1.POST("/chat/completions", handler.HandleChatCompletions)
 		v1.POST("/completions", handler.HandleCompletions)
 		v1.GET("/models", handler.HandleModels)
+		v1.POST("/embeddings", handler.HandleEmbeddings)
 
 		// Anthropic Claude Messages API ingress
 		v1.POST("/messages", handler.HandleAnthropicMessages)

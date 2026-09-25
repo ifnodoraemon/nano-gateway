@@ -192,7 +192,7 @@ func (p *DownstreamProber) probeGemini(ctx context.Context, baseURL, apiKey stri
 				Type:          model.ProviderGemini,
 				SuggestedName: "google-gemini-official",
 				Models:        list,
-				Protocols:     []string{"openai_chat", "anthropic_messages"},
+				Protocols:     inferProtocols(list),
 				LatencyMs:     dur,
 				Message:       fmt.Sprintf("成功连接 Google Gemini 官方接口，读取到 %d 个模型", len(list)),
 			}, nil
@@ -203,7 +203,7 @@ func (p *DownstreamProber) probeGemini(ctx context.Context, baseURL, apiKey stri
 		Type:          model.ProviderGemini,
 		SuggestedName: "google-gemini-official",
 		Models:        defaultGeminiModels,
-		Protocols:     []string{"openai_chat", "anthropic_messages"},
+		Protocols:     []string{"openai_chat", "anthropic_messages", "embeddings"},
 		LatencyMs:     dur,
 		Message:       "已配置 Google Gemini 协议，已载入标准 Gemini 2.0 / 1.5 系列预设",
 	}, nil
@@ -256,7 +256,7 @@ func (p *DownstreamProber) probeOllama(ctx context.Context, baseURL string, star
 		Type:          model.ProviderOpenAI,
 		SuggestedName: "ollama-local",
 		Models:        models,
-		Protocols:     []string{"openai_chat", "openai_text"},
+		Protocols:     inferProtocols(models),
 		LatencyMs:     dur,
 		Message:       fmt.Sprintf("已成功连接本地 Ollama 推理引擎，发现 %d 个模型", len(models)),
 	}, nil
@@ -311,11 +311,14 @@ func inferProtocols(models []string) []string {
 		if strings.Contains(lower, "sora") || strings.Contains(lower, "cogvideo") || strings.Contains(lower, "kling") || strings.Contains(lower, "video") {
 			protocolsMap["videos"] = true
 		}
+		if strings.Contains(lower, "embed") || strings.Contains(lower, "bge") || strings.Contains(lower, "e5") || strings.Contains(lower, "nomic") || strings.Contains(lower, "voyage") || strings.Contains(lower, "jina") || strings.Contains(lower, "text-embedding") {
+			protocolsMap["embeddings"] = true
+		}
 	}
 
 	var list []string
 	// Order canonically
-	ordered := []string{"openai_chat", "openai_text", "anthropic_messages", "images", "audio_speech", "audio_transcription", "videos"}
+	ordered := []string{"openai_chat", "openai_text", "anthropic_messages", "embeddings", "images", "audio_speech", "audio_transcription", "videos"}
 	for _, p := range ordered {
 		if protocolsMap[p] {
 			list = append(list, p)

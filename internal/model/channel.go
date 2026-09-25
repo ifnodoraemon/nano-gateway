@@ -63,6 +63,9 @@ func (c *ChannelConfig) SupportsProtocol(proto string) bool {
 		if (p == "videos" || p == "video_generation") && (proto == "videos" || proto == "video_generation") {
 			return true
 		}
+		if (p == "embeddings" || p == "embedding" || p == "openai_embeddings") && (proto == "embeddings" || proto == "embedding" || proto == "openai_embeddings") {
+			return true
+		}
 	}
 	return false
 }

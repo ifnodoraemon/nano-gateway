@@ -147,6 +147,46 @@ curl -X GET http://localhost:8080/v1/videos/tasks/video_task_123 \
   -H "Authorization: Bearer sk-gw-xxxx"
 ```
 
+### 3.5 Vector Embeddings
+- **Endpoint**: `POST /v1/embeddings`
+- **Supported Providers**: OpenAI, GPUStack, vLLM, Ollama, SGLang, Sub2API, Google Gemini.
+- **Protocol Adaptation**: Full native translation for Google Gemini (`:embedContent` and `:batchEmbedContents`), model rewriting, token tracking, and automatic safe fallback across candidate embedding nodes. Supports single string or batch string inputs.
+
+#### Request Example:
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Authorization: Bearer sk-gw-xxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "text-embedding-3-small",
+    "input": ["Deep learning infrastructure", "Next-generation agentic AI gateway"]
+  }'
+```
+
+#### Response Example:
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "object": "embedding",
+      "index": 0,
+      "embedding": [0.0023, -0.015, 0.045, 0.088]
+    },
+    {
+      "object": "embedding",
+      "index": 1,
+      "embedding": [-0.034, 0.082, 0.011, -0.005]
+    }
+  ],
+  "model": "text-embedding-3-small",
+  "usage": {
+    "prompt_tokens": 12,
+    "total_tokens": 12
+  }
+}
+```
+
 ---
 
 ## 4. Control Plane Admin APIs

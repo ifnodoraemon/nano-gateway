@@ -424,4 +424,61 @@ func (d *Dispatcher) DispatchHTTP(ctx context.Context, req *UpstreamRequest) (*U
 	return nil, fmt.Errorf("all %d providers failed for model '%s'. Last error: %w", len(channels), req.Model, lastErr)
 }
 
+// DispatchEmbedding routes an embedding request across matching candidate channels with Circuit Breaking and Safe Fallback.
+func (d *Dispatcher) DispatchEmbedding(ctx context.Context, req *model.EmbeddingRequest) (*model.EmbeddingResponse, error) {
+	channels := d.GetChannelsForModelAndProtocol(req.Model, "embeddings")
+	if len(channels) == 0 {
+		channels = d.GetChannelsForModel(req.Model)
+	}
+	if len(channels) == 0 {
+		return nil, fmt.Errorf("no upstream provider available for embedding model '%s'", req.Model)
+	}
+
+	var lastErr error
+	for i, ch := range channels {
+		if !d.circuitBreaker.CanExecute(ch.Name) {
+			telemetry.Logger.Warn("circuit breaker is OPEN, bypassing dead upstream", "channel", ch.Name)
+			continue
+		}
+
+		start := time.Now()
+		var resp *model.EmbeddingResponse
+		var err error
+
+		if ch.Type == model.ProviderGemini {
+			geminiProv, ok := d.providers[model.ProviderGemini].(*provider.GeminiProvider)
+			if !ok {
+				geminiProv = provider.NewGeminiProvider(nil)
+			}
+			resp, err = geminiProv.Embed(ctx, req, ch)
+		} else {
+			openAIProv, ok := d.providers[model.ProviderOpenAI].(*provider.OpenAIProvider)
+			if !ok {
+				openAIProv = provider.NewOpenAIProvider(nil)
+			}
+			resp, err = openAIProv.Embed(ctx, req, ch)
+		}
+
+		if err != nil {
+			d.circuitBreaker.RecordFailure(ch.Name)
+			lastErr = err
+			telemetry.GlobalMetrics.RecordFallback()
+			telemetry.Logger.Warn("upstream embedding request failed, falling back",
+				"channel", ch.Name,
+				"error", err.Error(),
+				"attempt", i+1,
+			)
+			continue
+		}
+
+		d.circuitBreaker.RecordSuccess(ch.Name)
+		dur := time.Since(start)
+		telemetry.GlobalMetrics.RecordRequest(true, dur, resp.Usage.PromptTokens, 0)
+		return resp, nil
+	}
+
+	telemetry.GlobalMetrics.RecordRequest(false, 0, 0, 0)
+	return nil, fmt.Errorf("all %d providers failed for embedding model '%s'. Last error: %w", len(channels), req.Model, lastErr)
+}
+
 
