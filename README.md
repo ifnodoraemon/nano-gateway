@@ -1,36 +1,61 @@
 # Nano-Gateway 🚀
 
-生产级、极速并发、极致高可用且高韧性的 LLM 智能网关。从零以 Go 语言构建，原生支持 **Any-to-Any 协议矩阵** 与 **级联模型源 (Cascading Providers)**。
+[![CI Quality Gate & Automated Testing](https://github.com/ifnodoraemon/nano-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/ifnodoraemon/nano-gateway/actions/workflows/ci.yml)
+[![Build & Publish Multi-Arch Docker Image](https://github.com/ifnodoraemon/nano-gateway/actions/workflows/docker.yml/badge.svg)](https://github.com/ifnodoraemon/nano-gateway/actions/workflows/docker.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/ifnodoraemon/nano-gateway)](https://goreportcard.com/report/github.com/ifnodoraemon/nano-gateway)
+
+生产级、极速并发、极致高可用且高韧性的企业级 LLM 与全模态智能网关。从零以 Go 语言构建，原生支持 **Any-to-Any 协议矩阵**、**级联模型源 (Cascading Providers)**、**下游智能探测 (Auto-Probe)** 与 **全双工协议自动转译**。
 
 彻底解耦 **数据面 (Data Plane - 极致并发转发内核)** 与 **控制面 (Control Plane - 运维治理内核)**，单二进制内嵌 **现代化明亮控制台 (React 19 + Tailwind CSS Web UI)**。
 
 ---
 
+## 📚 完整文档索引 (Documentation)
+
+- [📖 API 接口详尽参考手册 (API Reference)](docs/API_REFERENCE.md)
+- [⚙️ 系统全量配置与调优指南 (Configuration & Tuning)](docs/CONFIGURATION.md)
+- [🔌 供应商与下游对接指南 (Provider Integration Guide)](docs/PROVIDER_GUIDE.md)
+- [🛡️ 高可用集群与容灾部署架构 (HA Architecture)](docs/HA_ARCHITECTURE.md)
+
+---
+
 ## 🌟 核心特性与架构优势
 
-### 1. 级联模型源与无限制模型命名 (Cascading Models & Namespaces)
-- **多层级斜杠无限制支持**：下游模型形如 `xxx/xx`（例如 `meta-llama/Llama-3.1-8B-Instruct` 或 `deepseek-ai/DeepSeek-V3`），对外可任意包装为 `yy/xxx/xx`、`org/team/project/model` 或任意级联路径，网关不设任何层级限制。
-- **通配符前缀映射 (Prefix Wildcards)**：支持配置 `"yy/*": "*"` 或 `"cascade/*": "upstream/*"`，自动完成前缀剥离与转发重写。
+### 1. 🔍 一键智能探测下游服务 (Downstream Auto-Probe)
+- 只需输入下游服务的 Base URL 与可选 API Key，网关后台**毫秒级探测并自动读取**：
+  - 自动发现所有挂载模型 ID；
+  - 自动识别厂商类型（GPUStack、Sub2API、Google Gemini、Anthropic Claude、vLLM、Ollama）；
+  - 自动匹配并勾选下游支持的协议与模态（对话、生图、TTS、Whisper、视频）；
+  - 彻底免去用户手动配置模型列表与协议的繁琐操作。
+
+### 2. 🔄 全双工协议自动转译 (Bidirectional Protocol Translation)
+- **纯补全下游自动适应**：当下游模型仅支持传统的 `/v1/completions` 接口时，网关透明地将入站的 Chat 请求与 SSE 流转译为补全 Prompt，并将响应包装回标准 Chat Choices 与 SSE Deltas。
+- **Claude 原生双向互转**：客户端可直接使用原生 Anthropic SDK 请求 `/v1/messages`，网关自动将请求转化为 OpenAI / Gemini 格式，并在返回时转换为 Claude Messages 协议。
+- **Gemini 原生格式转译**：官方 Gemini Developer API 专用协议透明转译，支持多模态多轮会话。
+
+### 3. 🎨 文本/图像/语音/视频全模态支持 (Unified Multimodal Pipeline)
+- **对话与补全**：`/v1/chat/completions`, `/v1/completions`, `/v1/messages`
+- **AI 图像生成**：`/v1/images/generations`（DALL-E 3、Flux、SD3）
+- **语音合成 TTS**：`/v1/audio/speech`（流式二进制直连，零常驻内存）
+- **语音识别 STT**：`/v1/audio/transcriptions`（Whisper Multipart 流式转录）
+- **视频生成与轮询**：`/v1/videos/generations`, `/v1/videos/tasks/:id`（Sora / CogVideoX 异步任务轮询）
+- 所有模态均采用**软件工程 Strategy 统一管道 (`DispatchHTTP`)**，共享三态熔断与安全容灾。
+
+### 4. 🔗 级联模型源与无限制模型命名 (Cascading Models & Namespaces)
+- **多层级斜杠无限制支持**：下游模型形如 `xxx/xx`，对外可任意包装为 `yy/xxx/xx`、`org/team/project/model` 或任意级联路径，网关不设任何层级限制。
+- **通配符前缀映射 (Prefix Wildcards)**：支持配置 `"yy/*": "*"` 或 `"org/dept/*": "*"`，自动完成前缀剥离与转发重写。
 - **自动渠道名称前缀匹配**：当请求模型形如 `<provider_name>/<upstream_model>` 时，网关自动定位该 Provider 并透明透传 `<upstream_model>`。
 
-### 2. 丰富的第一公民模型源 (First-Class Providers)
-- **🖥️ GPUStack 原生支持**：一键接入私有化算力池，原生对接 `/v1-openai`、`/v1`。
-- **⚡ Sub2API 聚合网关**：内置快速预设，一键聚合多上游算力。
-- **🌐 Google Gemini 专用适配**：支持 Gemini Developer API 的 `?key=` 与 `x-goog-api-key`、`contents/parts` 多模态多轮对话及 `BLOCK_NONE` 安全放行。
-- **🧠 Anthropic Claude 双向转换**：入站出站任意互转（OpenAI 格式与 Claude `/v1/messages`）。
-- **🤖 OpenAI 官方 / 🚀 DeepSeek / 💻 vLLM / SGLang / Ollama / 🛠️ 自定义下游 (Custom)**。
-- **自选下游支持协议**：每个 Provider 可自由勾选开放的下游协议（OpenAI Chat、OpenAI Text、Claude Messages），调度器自动进行协议感知路由。
-
-### 3. 极致性能与零延迟 (Extreme Performance)
-- **代理热路径零数据库查询 (Zero-DB Hot Path)**：路由表与密钥常驻内存读写锁结构，请求在微秒级完成路由决策（$< 50\mu s$），0 次 SQL 查询。
-- **预热长连接池 (HTTP Transport Pool)**：预热 2048 个复用连接、单 Host 512 并发长连接、HTTP/2 多路复用，杜绝 TCP 握手开销与 `TIME_WAIT` 端口耗尽。
+### 5. ⚡ 极致性能与零延迟 (Extreme Performance)
+- **代理热路径零数据库查询 (Zero-DB Hot Path)**：路由表与密钥常驻内存读写锁结构，微秒级路由决策（$< 50\mu s$），0 次 SQL 查询。
+- **预热长连接池 (HTTP Transport Pool)**：预热 2048 个复用连接、单 Host 256 并发长连接、HTTP/2 多路复用，杜绝 TCP 握手开销。
 - **异步环形缓冲审计日志器 (AsyncLogger)**：10000 容量缓冲队列，500ms 批量异步持久化入库，慢磁盘 IO 绝不拖累转发延迟。
 
-### 4. 极致高可用与容灾 (Extreme High Availability)
+### 6. 🛡️ 极致高可用与容灾 (Extreme High Availability)
 - **三态智能熔断器 (Tri-State Circuit Breaker)**：每个 Provider 独立跟踪健康度。发生 3 次连续故障（500/429/超时）即刻熔断 30 秒，旁路死节点避免雪崩；冷却后自动进行半开探活与自愈。
 - **首字前无感容灾窗 (Safe Fallback Window)**：在首个有效 Token 或完整结果返回前遇到上游异常，毫秒级无缝漂移到下一个优先级 Provider，客户端业务完全无感知。
 - **集群 10 秒定期无锁自同步**：任意实例修改配置，多副本集群后台自动热重载，无需人工重启服务。
-- **平滑优雅停机 (Graceful Shutdown)**：收到 `SIGTERM` 启动优雅排空，允许进行中的长连接 SSE 流式推流平滑完成。
 
 ---
 
@@ -51,7 +76,7 @@ flowchart TD
 
     subgraph DataPlane["1. 数据面内核 (Data Plane - 极致性能与低延迟)"]
         Adapter["Any-to-Any 协议矩阵 (Chat / Text / Messages / 多模态)"]
-        Dispatcher["智能调度与协议白名单路由 (Dispatcher)"]
+        Dispatcher["统一分发管道与协议路由 (DispatchHTTP / DispatchStream)"]
         Breaker["三态熔断器 (Tri-State Circuit Breaker)"]
         Fallback["首字前无感容灾窗 (Safe Fallback Window)"]
         Pool["预热长连接池 (2048 闲置连接复用)"]
@@ -60,7 +85,7 @@ flowchart TD
     Node2 --- DataPlane
     NodeN --- DataPlane
 
-    subgraph UpstreamProviders["下游模型源 (Providers - 支持协议过滤)"]
+    subgraph UpstreamProviders["下游模型源 (Providers - 支持协议过滤与智能探测)"]
         GPUStack["🖥️ GPUStack (私有化集群)"]
         Sub2API["⚡ Sub2API (聚合通道)"]
         Gemini["🌐 Google Gemini (专用协议)"]
@@ -73,126 +98,68 @@ flowchart TD
 
     subgraph ControlPlane["2. 控制面与同步内核 (Control Plane)"]
         SyncWorker["集群自动定期热加载 (10s 自动无锁同步)"]
-        AdminAPI["RESTful 运维治理 API (/providers, /keys, /stats)"]
+        Prober["智能下游探测引擎 (Auto-Probe)"]
+        AdminAPI["RESTful 运维治理 API (/channels, /keys, /logs, /stats)"]
     end
 
     subgraph StorageLayer["3. 存储与异步审计引擎 (Storage Engine)"]
         SQLite[(纯 Go SQLite WAL 模式)]
-        AsyncLogger["异步环形缓冲写入器 (10000 缓冲容量)"]
+        AsyncQueue["异步环形缓冲队列 (10,000 容量)"]
     end
-
-    ControlPlane -.-> StorageLayer
-    DataPlane -.-> AsyncLogger -.-> StorageLayer
+    DataPlane -.->|无阻塞异步投递| AsyncQueue
+    AsyncQueue -->|批量刷盘| SQLite
+    ControlPlane <-->|读写热加载| SQLite
 ```
 
 ---
 
-## 🚀 快速开始与部署方式
+## 🚀 极速部署指南
 
-### 方式 1：单二进制本地运行 (内置嵌入式 Web UI)
-
+### 方式 A: 预编译二进制直接运行
 ```bash
-# 1. 编译 (自动编译 React 前端并嵌入 Go 单文件二进制)
+# 1. 编译自包含单二进制（包含内嵌 Web UI）
 make build
 
-# 2. 运行网关
-./bin/nano-gateway -config configs/config.yaml -db data/gateway.db
+# 2. 启动网关
+./bin/nano-gateway -config configs/config.yaml
 ```
+- 控制台地址：`http://localhost:8080/ui/`
+- Prometheus 指标：`http://localhost:8080/metrics`
+- 健康检查：`http://localhost:8080/health`
 
-打开浏览器访问明亮管理控制台：👉 **`http://localhost:8080/ui/`**
-
----
-
-### 方式 2：Docker Compose 多节点高可用集群部署
-
-自带 Nginx 负载均衡器（已配置 `proxy_buffering off` 确保 SSE 流式零延迟）、双 Gateway 无状态节点与持久化数据卷：
-
+### 方式 B: Docker Compose 多副本高可用集群
 ```bash
-# 一键拉起高可用集群
-docker compose up -d
-
-# 查看集群状态
-docker compose ps
+# 一键启动 2 副本 Gateway + Nginx 负载均衡器
+docker compose up -d --build
 ```
+Nginx 会自动在 `http://localhost:80` 暴露统一入口，并以 `least_conn` 算法向双节点分发流量，自动关闭 SSE 缓冲 (`proxy_buffering off`)。
 
-- **网关统一入口**：`http://localhost:8080`
-- **控制台页面**：`http://localhost:8080/ui/`
-
----
-
-### 方式 3：Kubernetes Helm Chart 生产级部署
-
-专为生产环境量身定制的高可用 Helm Chart，支持多副本、HPA 自动扩缩容、存活探针就绪探针以及 Ingress SSE 配置：
-
+### 方式 C: Kubernetes Helm Chart 部署
 ```bash
-# 1. 检查 Helm Chart 语法
-helm lint ./helm/nano-gateway
-
-# 2. 一键安装发布
-helm install nano-gateway ./helm/nano-gateway \
-  --set replicaCount=3 \
-  --set ingress.enabled=true \
-  --set ingress.hosts[0].host=gateway.example.com
+# 使用 Helm 一键部署至 K8s
+helm install nano-gateway ./helm/nano-gateway -n gateway --create-namespace
 ```
 
 ---
 
-## 📡 接口调用与级联示例
+## 🧪 自动化测试体系
 
-### 1. 级联模型调用 (支持 `yy/xxx/xx` 无限制命名)
-```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-gw-admin-demo" \
-  -d '{
-    "model": "myorg/gpustack/meta-llama/Llama-3.1-8B-Instruct",
-    "messages": [
-      {"role": "user", "content": "你好，请介绍一下你自己！"}
-    ],
-    "stream": true
-  }'
-```
-
-### 2. Claude 原生协议接入 (/v1/messages)
-```bash
-curl -X POST http://localhost:8080/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: sk-gw-admin-demo" \
-  -d '{
-    "model": "claude-3-5-sonnet",
-    "messages": [
-      {"role": "user", "content": "Hello via Anthropic SDK!"}
-    ],
-    "max_tokens": 1024
-  }'
-```
-
-### 3. 多模态视觉测试 (Vision)
-```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-gw-admin-demo" \
-  -d '{
-    "model": "gemini-2.0-flash",
-    "messages": [
-      {
-        "role": "user",
-        "content": [
-          {"type": "text", "text": "图中展示了什么？"},
-          {"type": "image_url", "image_url": {"url": "https://example.com/demo.jpg"}}
-        ]
-      }
-    ]
-  }'
-```
-
----
-
-## 🧪 自动化测试套件
-
-内置 14 套端到端测试用例，覆盖协议转换、熔断自愈、首字容灾、GPUStack 算力池与级联模型映射：
-
+所有 19 个端到端及单元测试套件均在并发竞态检测 (`-race`) 模式下自动化运行：
 ```bash
 make test
-# 输出: 14/14 PASS (go test -v -race ./...)
 ```
+包含：
+- API 健康度与 Prometheus `/metrics` 校验
+- 控制面动态 CRUD 与数据面热重载
+- 级联模型命名与通配符前缀剥离 (`TestCascadingAndUnrestrictedModelMapping`)
+- 三态智能熔断器状态机跃迁 (`CLOSED -> OPEN -> HALF-OPEN -> CLOSED`)
+- 首字前无感容灾窗口（非流式与流式）
+- Google Gemini 协议与 Anthropic Claude 双向流式转换
+- 多模态生图、TTS、Whisper STT 与视频生成管道
+- 纯文本补全下游全双工协议转译与智能探测 (`TestAutoProbe_OpenAIAndGPUStack`)
+
+---
+
+## 📄 开源许可证
+
+本项目基于 [MIT 许可证](LICENSE) 开源。

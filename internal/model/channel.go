@@ -67,6 +67,24 @@ func (c *ChannelConfig) SupportsProtocol(proto string) bool {
 	return false
 }
 
+// OnlySupportsProtocol checks if the channel only supports a single protocol.
+func (c *ChannelConfig) OnlySupportsProtocol(proto string) bool {
+	if len(c.Protocols) == 0 {
+		return false
+	}
+	for _, p := range c.Protocols {
+		if p != proto {
+			return false
+		}
+	}
+	return true
+}
+
+// IsPureTextCompletion checks if this upstream channel exclusively serves text completion (/v1/completions).
+func (c *ChannelConfig) IsPureTextCompletion() bool {
+	return c.OnlySupportsProtocol("openai_text") || c.OnlySupportsProtocol("completion")
+}
+
 // SupportsModel checks if this channel can service the requested model (supporting cascading models, wildcards, and prefix stripping).
 func (c *ChannelConfig) SupportsModel(requestedModel string) bool {
 	// 1. Exact match or wildcard in Models list

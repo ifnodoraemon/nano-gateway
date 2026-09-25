@@ -129,6 +129,25 @@ func TestAPI_AdminCRUDAndHotReload(t *testing.T) {
 	if wDataPlane.Code != http.StatusOK {
 		t.Errorf("expected 200 OK from Data Plane with hot-reloaded key, got %d: %s", wDataPlane.Code, wDataPlane.Body.String())
 	}
+
+	// 6. Test GET /api/v1/admin/logs
+	_ = repo.RecordUsageLog(&storage.UsageLogRecord{
+		VirtualKey: "sk-gw-admin-test",
+		TenantID:   "dev-team",
+		Model:      "deepseek-chat",
+		Channel:    "upstream-primary",
+		DurationMs: 15,
+		StatusCode: 200,
+	})
+	reqLogs := httptest.NewRequest(http.MethodGet, "/api/v1/admin/logs?limit=10", nil)
+	wLogs := httptest.NewRecorder()
+	engine.ServeHTTP(wLogs, reqLogs)
+	if wLogs.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for /api/v1/admin/logs, got %d: %s", wLogs.Code, wLogs.Body.String())
+	}
+	if !bytes.Contains(wLogs.Body.Bytes(), []byte("deepseek-chat")) {
+		t.Errorf("expected logs response to contain logged model 'deepseek-chat'")
+	}
 }
 
 func TestAPI_ChatCompletions_ModelForbidden(t *testing.T) {

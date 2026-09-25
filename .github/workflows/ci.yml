@@ -1,0 +1,57 @@
+name: CI Quality Gate & Automated Testing
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    name: Build & Race Detector Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build Web UI Frontend
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Setup Go 1.24
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Verify Go Dependencies
+        run: |
+          go mod verify
+
+      - name: Run Unit Tests with Race Detector
+        run: |
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Compile Standalone Gateway Binary
+        run: |
+          mkdir -p bin
+          go build -v -o bin/nano-gateway cmd/gateway/main.go
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.14.0'
+
+      - name: Validate Kubernetes Helm Chart
+        run: |
+          helm lint helm/nano-gateway

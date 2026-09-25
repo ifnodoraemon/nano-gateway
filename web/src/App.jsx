@@ -26,7 +26,12 @@ import {
   Video,
   Download,
   FileAudio,
-  MessageSquare
+  MessageSquare,
+  BookOpen,
+  History,
+  Sliders,
+  Code,
+  Search
 } from 'lucide-react';
 
 export default function App() {
@@ -35,8 +40,11 @@ export default function App() {
   const [channels, setChannels] = useState([]);
   const [keys, setKeys] = useState([]);
   const [models, setModels] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [logLoading, setLogLoading] = useState(false);
+  const [logFilter, setLogFilter] = useState('');
 
-  // Modals
+  // Modals & Forms
   const [showChannelModal, setShowChannelModal] = useState(false);
   const [newChannel, setNewChannel] = useState({
     name: '',
@@ -49,6 +57,9 @@ export default function App() {
     mapping_str: '',
     protocols: ['openai_chat', 'openai_text', 'anthropic_messages', 'images', 'audio_speech', 'audio_transcription', 'videos'],
   });
+
+  const [probing, setProbing] = useState(false);
+  const [probeAlert, setProbeAlert] = useState(null);
 
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [newKey, setNewKey] = useState({
@@ -68,7 +79,7 @@ export default function App() {
 
   // 1. Chat & Completions state
   const [playModel, setPlayModel] = useState('deepseek-chat');
-  const [playProtocol, setPlayProtocol] = useState('openai_chat'); // openai_chat, openai_text, anthropic_messages
+  const [playProtocol, setPlayProtocol] = useState('openai_chat');
   const [playStream, setPlayStream] = useState(true);
   const [playPrompt, setPlayPrompt] = useState('请用一句话介绍你自己和你的技术架构。');
   const [playImageUrl, setPlayImageUrl] = useState('');
@@ -98,9 +109,12 @@ export default function App() {
   const [videoPrompt, setVideoPrompt] = useState('A cinematic drone shot flying over a futuristic city with green energy towers and flying drones at dawn');
   const [videoAspectRatio, setVideoAspectRatio] = useState('16:9');
   const [videoTaskId, setVideoTaskId] = useState('');
-  const [videoTaskStatus, setVideoTaskStatus] = useState(''); // PENDING, PROCESSING, SUCCESS, FAILED
+  const [videoTaskStatus, setVideoTaskStatus] = useState('');
   const [videoResultUrl, setVideoResultUrl] = useState('');
   const [videoPollCount, setVideoPollCount] = useState(0);
+
+  // Docs tab category
+  const [docsSection, setDocsSection] = useState('quickstart');
 
   // Load backend data
   const fetchData = async () => {
@@ -126,11 +140,80 @@ export default function App() {
     }
   };
 
+  const fetchLogs = async () => {
+    setLogLoading(true);
+    try {
+      const res = await fetch('/api/v1/admin/logs?limit=50');
+      const data = await res.json();
+      if (data.code === 0) {
+        setLogs(data.data || []);
+      }
+    } catch (e) {
+      console.error('Fetch logs failed:', e);
+    } finally {
+      setLogLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 8000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (currentTab === 'logs') {
+      fetchLogs();
+    }
+  }, [currentTab]);
+
+  // Downstream Auto-Probe
+  const handleProbeChannel = async () => {
+    if (!newChannel.base_url.trim()) {
+      alert('请先输入下游服务的 Base URL');
+      return;
+    }
+    setProbing(true);
+    setProbeAlert(null);
+    try {
+      const res = await fetch('/api/v1/admin/channels/probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          base_url: newChannel.base_url,
+          api_key: newChannel.api_key,
+          type: newChannel.type,
+        }),
+      });
+      const data = await res.json();
+      if (data.code === 0 && data.data) {
+        const d = data.data;
+        setNewChannel(prev => ({
+          ...prev,
+          type: d.type || prev.type,
+          name: prev.name ? prev.name : d.suggested_name,
+          models_str: d.models?.length ? d.models.join(', ') : prev.models_str,
+          protocols: d.protocols?.length ? d.protocols : prev.protocols,
+        }));
+        setProbeAlert({
+          type: 'success',
+          text: `✅ 智能探测成功 (耗时: ${d.latency_ms}ms)！已自动匹配 ${d.models?.length || 0} 个模型并勾选对应协议。${d.message ? `(${d.message})` : ''}`,
+        });
+      } else {
+        setProbeAlert({
+          type: 'error',
+          text: `❌ 探测失败: ${data.error || '无法连通指定上游'}`,
+        });
+      }
+    } catch (e) {
+      setProbeAlert({
+        type: 'error',
+        text: `探测异常: ${e.message}`,
+      });
+    } finally {
+      setProbing(false);
+    }
+  };
 
   // Quick Presets for Provider
   const applyPreset = (presetKey) => {
@@ -271,6 +354,7 @@ export default function App() {
       body: JSON.stringify(payload),
     });
     setShowChannelModal(false);
+    setProbeAlert(null);
     setNewChannel({
       name: '',
       type: 'openai',
@@ -333,7 +417,7 @@ export default function App() {
   // Copy text helper
   const copyToClipboard = (txt) => {
     navigator.clipboard.writeText(txt);
-    alert(`已复制到剪贴板: ${txt}`);
+    alert(`已复制到剪贴板！`);
   };
 
   // 1. Chat Execution
@@ -675,6 +759,17 @@ export default function App() {
     }
   };
 
+  const filteredLogs = logs.filter(l => {
+    if (!logFilter) return true;
+    const f = logFilter.toLowerCase();
+    return (
+      (l.model && l.model.toLowerCase().includes(f)) ||
+      (l.channel && l.channel.toLowerCase().includes(f)) ||
+      (l.tenant_id && l.tenant_id.toLowerCase().includes(f)) ||
+      (l.virtual_key && l.virtual_key.toLowerCase().includes(f))
+    );
+  });
+
   return (
     <div className="flex min-h-screen bg-slate-50 text-slate-800 font-sans selection:bg-indigo-500 selection:text-white">
       {/* Sidebar */}
@@ -727,6 +822,18 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => setCurrentTab('logs')}
+            className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
+              currentTab === 'logs'
+                ? 'bg-indigo-50/80 text-indigo-700 border-indigo-200 shadow-xs font-semibold'
+                : 'text-slate-600 hover:bg-slate-100/70 hover:text-slate-900 border-transparent'
+            }`}
+          >
+            <History className="w-4 h-4 text-sky-500" />
+            <span>调用日志与审计</span>
+          </button>
+
+          <button
             onClick={() => setCurrentTab('playground')}
             className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
               currentTab === 'playground'
@@ -736,6 +843,18 @@ export default function App() {
           >
             <Terminal className="w-4 h-4 text-purple-500" />
             <span>多模态实验台</span>
+          </button>
+
+          <button
+            onClick={() => setCurrentTab('docs')}
+            className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
+              currentTab === 'docs'
+                ? 'bg-indigo-50/80 text-indigo-700 border-indigo-200 shadow-xs font-semibold'
+                : 'text-slate-600 hover:bg-slate-100/70 hover:text-slate-900 border-transparent'
+            }`}
+          >
+            <BookOpen className="w-4 h-4 text-teal-600" />
+            <span>开发接入与文档</span>
           </button>
         </nav>
 
@@ -755,9 +874,11 @@ export default function App() {
           <div className="flex items-center space-x-3">
             <h2 className="text-lg font-bold text-slate-900 tracking-tight">
               {currentTab === 'dashboard' && '运行指标与全局概览'}
-              {currentTab === 'channels' && '模型源与供应商治理 (GPUStack, Sub2API, Gemini, Claude, OpenAI)'}
+              {currentTab === 'channels' && '模型源与供应商治理 (智能探测, GPUStack, Sub2API, Gemini, Claude, OpenAI)'}
               {currentTab === 'keys' && '客户端 API 密钥与限流治理'}
+              {currentTab === 'logs' && '实时请求审计日志与流量明细'}
               {currentTab === 'playground' && '多协议全模态交互实验台 (Chat, Images, TTS, STT, Videos)'}
+              {currentTab === 'docs' && 'API 接口文档与多语言 SDK 接入指南'}
             </h2>
           </div>
 
@@ -847,10 +968,10 @@ export default function App() {
                 <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
                   <h3 className="font-semibold text-slate-900 mb-2 flex items-center space-x-2">
                     <Cpu className="w-4 h-4 text-emerald-600" />
-                    <span>原生 GPUStack & Sub2API 支持</span>
+                    <span>一键智能探测 & 全双工协议转换</span>
                   </h3>
                   <p className="text-xs text-slate-500 leading-relaxed">
-                    一键接入 GPUStack 私有算力池与 Sub2API 聚合网关，支持级联模型别名映射（yy/xxx/xx → xxx/xx）。
+                    只需输入 Base URL 即可自动读取上游格式与全部模型 ID；若下游仅支持单一协议，网关自动完成双向透明转译。
                   </p>
                 </div>
 
@@ -873,10 +994,13 @@ export default function App() {
               <div className="flex justify-between items-center bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
                 <div>
                   <h3 className="font-semibold text-slate-900 text-sm">模型提供商 (Providers) 列表</h3>
-                  <p className="text-xs text-slate-500 mt-0.5">配置各大主流服务商及私有算力池（GPUStack, Sub2API, Gemini, Claude, OpenAI），支持多模态协议与熔断探活。</p>
+                  <p className="text-xs text-slate-500 mt-0.5">支持一键智能探测读取下游模型与协议，支持纯补全自动转译与级联无限制重写。</p>
                 </div>
                 <button
-                  onClick={() => setShowChannelModal(true)}
+                  onClick={() => {
+                    setProbeAlert(null);
+                    setShowChannelModal(true);
+                  }}
                   className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold shadow-sm flex items-center space-x-2 transition"
                 >
                   <Plus className="w-4 h-4" />
@@ -1008,7 +1132,7 @@ export default function App() {
                     {channels.length === 0 && (
                       <tr>
                         <td colSpan="7" className="py-12 text-center text-slate-400">
-                          暂无配置 Provider，点击右上角快速新建
+                          暂无配置 Provider，点击右上角快速新建或智能探测
                         </td>
                       </tr>
                     )}
@@ -1093,7 +1217,124 @@ export default function App() {
             </div>
           )}
 
-          {/* 4. MULTIMODAL PLAYGROUND TAB */}
+          {/* 4. AUDIT LOGS TAB */}
+          {currentTab === 'logs' && (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs gap-4">
+                <div>
+                  <h3 className="font-semibold text-slate-900 text-sm flex items-center space-x-2">
+                    <History className="w-4 h-4 text-sky-600" />
+                    <span>请求审计与调用明细</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">实时追踪每一笔 API 请求的耗时、首字延迟 (TTFT)、Token 消耗与路由命中渠道。</p>
+                </div>
+                <div className="flex items-center space-x-3 w-full sm:w-auto">
+                  <div className="relative flex-1 sm:w-64">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-3" />
+                    <input
+                      type="text"
+                      value={logFilter}
+                      onChange={(e) => setLogFilter(e.target.value)}
+                      placeholder="筛选模型 / 渠道 / 租户..."
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-indigo-500 focus:bg-white"
+                    />
+                  </div>
+                  <button
+                    onClick={fetchLogs}
+                    disabled={logLoading}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition border border-slate-200"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${logLoading ? 'animate-spin' : ''}`} />
+                    <span>刷新</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-xs">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-slate-500 text-xs uppercase bg-slate-50/80">
+                      <th className="py-3.5 px-6 font-semibold">请求时间</th>
+                      <th className="py-3.5 px-6 font-semibold">请求模型 (Model)</th>
+                      <th className="py-3.5 px-6 font-semibold">命中渠道 (Provider)</th>
+                      <th className="py-3.5 px-6 font-semibold">租户 / 虚拟 Key</th>
+                      <th className="py-3.5 px-6 font-semibold">Token (输入/输出/总)</th>
+                      <th className="py-3.5 px-6 font-semibold">耗时 / TTFT</th>
+                      <th className="py-3.5 px-6 text-right font-semibold">状态</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-sm font-mono text-xs">
+                    {filteredLogs.map((log) => (
+                      <tr key={log.id} className="hover:bg-slate-50/60 transition">
+                        <td className="py-4 px-6 text-slate-500 font-sans">
+                          {log.created_at ? new Date(log.created_at).toLocaleTimeString() : '刚刚'}
+                        </td>
+                        <td className="py-4 px-6 font-semibold text-slate-900 font-mono">
+                          <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md border border-indigo-100">
+                            {log.model || '-'}
+                          </span>
+                        </td>
+                        <td className="py-4 px-6 text-slate-700">
+                          {log.channel ? (
+                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-md border border-emerald-100">
+                              {log.channel}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">直通/多渠道</span>
+                          )}
+                        </td>
+                        <td className="py-4 px-6 text-slate-600 font-sans">
+                          <span className="font-semibold text-slate-800">{log.tenant_id || 'anonymous'}</span>
+                          {log.virtual_key && (
+                            <span className="block text-[10px] text-slate-400 font-mono mt-0.5 truncate max-w-[120px]">
+                              {log.virtual_key}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-4 px-6 text-slate-700">
+                          {log.total_tokens > 0 ? (
+                            <span>
+                              {log.prompt_tokens} + {log.completion_tokens} = <strong className="text-indigo-600">{log.total_tokens}</strong>
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </td>
+                        <td className="py-4 px-6 text-slate-700">
+                          <span className="font-bold text-slate-900">{log.duration_ms} ms</span>
+                          {log.ttft_ms > 0 && (
+                            <span className="block text-[11px] text-amber-600">TTFT: {log.ttft_ms} ms</span>
+                          )}
+                        </td>
+                        <td className="py-4 px-6 text-right font-sans">
+                          <span
+                            className={`px-2 py-0.5 rounded text-xs font-semibold ${
+                              log.status_code === 200
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : log.status_code === 429
+                                ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                : 'bg-rose-50 text-rose-700 border border-rose-200'
+                            }`}
+                          >
+                            {log.status_code || 200}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {filteredLogs.length === 0 && (
+                      <tr>
+                        <td colSpan="7" className="py-12 text-center text-slate-400 font-sans">
+                          暂无匹配的审计调用记录
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* 5. MULTIMODAL PLAYGROUND TAB */}
           {currentTab === 'playground' && (
             <div className="space-y-4">
               {/* Modality Selector Bar */}
@@ -1689,17 +1930,248 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* 6. DOCS TAB */}
+          {currentTab === 'docs' && (
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              {/* Category sidebar */}
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-4 space-y-1 shadow-xs h-fit">
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider px-3 mb-2 block">接入与规范文档</span>
+                <button
+                  onClick={() => setDocsSection('quickstart')}
+                  className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition ${
+                    docsSection === 'quickstart' ? 'bg-indigo-50 text-indigo-700 font-bold' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Code className="w-3.5 h-3.5" />
+                  <span>OpenAI SDK 极速接入</span>
+                </button>
+                <button
+                  onClick={() => setDocsSection('claude')}
+                  className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition ${
+                    docsSection === 'claude' ? 'bg-indigo-50 text-indigo-700 font-bold' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                  <span>Claude Messages API 接入</span>
+                </button>
+                <button
+                  onClick={() => setDocsSection('multimodal')}
+                  className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition ${
+                    docsSection === 'multimodal' ? 'bg-indigo-50 text-indigo-700 font-bold' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <ImageIcon className="w-3.5 h-3.5" />
+                  <span>多模态 (图/音/视) 接口规范</span>
+                </button>
+                <button
+                  onClick={() => setDocsSection('cascading')}
+                  className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition ${
+                    docsSection === 'cascading' ? 'bg-indigo-50 text-indigo-700 font-bold' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>级联模型映射语法</span>
+                </button>
+                <button
+                  onClick={() => setDocsSection('deploy')}
+                  className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition ${
+                    docsSection === 'deploy' ? 'bg-indigo-50 text-indigo-700 font-bold' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Server className="w-3.5 h-3.5" />
+                  <span>Docker & K8s 高可用部署</span>
+                </button>
+              </div>
+
+              {/* Doc Content */}
+              <div className="md:col-span-3 bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs space-y-6">
+                {docsSection === 'quickstart' && (
+                  <div className="space-y-4">
+                    <div className="border-b border-slate-100 pb-3">
+                      <h3 className="text-base font-bold text-slate-900">Python OpenAI SDK 接入指南</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">将官方 OpenAI SDK 的 base_url 直接指向 Nano-Gateway 网关入口即可。</p>
+                    </div>
+
+                    <div className="relative group">
+                      <pre className="p-4 bg-slate-900 text-slate-100 rounded-xl text-xs font-mono overflow-x-auto leading-relaxed">
+{`from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/v1",  # Nano-Gateway 端口
+    api_key="sk-gw-xxxx",                 # 在控制台签发的虚拟 Key
+)
+
+response = client.chat.completions.create(
+    model="deepseek-chat",               # 支持任意映射模型
+    messages=[{"role": "user", "content": "你好！"}],
+    stream=True,                         # 原生毫秒级 SSE 流式传输
+)
+
+for chunk in response:
+    content = chunk.choices[0].delta.content or ""
+    print(content, end="", flush=True)`}
+                      </pre>
+                      <button
+                        onClick={() => copyToClipboard(`from openai import OpenAI\n\nclient = OpenAI(\n    base_url="http://localhost:8080/v1",\n    api_key="sk-gw-xxxx",\n)\n\nresponse = client.chat.completions.create(\n    model="deepseek-chat",\n    messages=[{"role": "user", "content": "你好！"}],\n    stream=True,\n)\n\nfor chunk in response:\n    content = chunk.choices[0].delta.content or ""\n    print(content, end="", flush=True)`)}
+                        className="absolute top-3 right-3 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] font-mono flex items-center space-x-1"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>复制</span>
+                      </button>
+                    </div>
+
+                    <div className="border-t border-slate-100 pt-4">
+                      <h4 className="text-xs font-bold text-slate-800 mb-2">cURL 极速调试命令:</h4>
+                      <pre className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-700 overflow-x-auto">
+{`curl -X POST http://localhost:8080/v1/chat/completions \\
+  -H "Authorization: Bearer sk-gw-xxxx" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model": "deepseek-chat", "messages": [{"role": "user", "content": "Ping"}], "stream": true}'`}
+                      </pre>
+                    </div>
+                  </div>
+                )}
+
+                {docsSection === 'claude' && (
+                  <div className="space-y-4">
+                    <div className="border-b border-slate-100 pb-3">
+                      <h3 className="text-base font-bold text-slate-900">Anthropic Claude Messages API 接入</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">原生支持 Claude Code、Cursor、Cline 等工具直接使用 Anthropic 原生协议调用任何异构下游！</p>
+                    </div>
+
+                    <pre className="p-4 bg-slate-900 text-slate-100 rounded-xl text-xs font-mono overflow-x-auto leading-relaxed">
+{`import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080",  # 网关根路径，将自动请求 /v1/messages
+    api_key="sk-gw-xxxx",
+)
+
+message = client.messages.create(
+    model="claude-3-5-sonnet",
+    max_tokens=1024,
+    messages=[
+        {"role": "user", "content": "请介绍量子计算的核心原理。"}
+    ]
+)
+print(message.content[0].text)`}
+                    </pre>
+
+                    <div className="p-4 bg-indigo-50 border border-indigo-200 rounded-xl text-xs text-indigo-900 space-y-1">
+                      <span className="font-bold">💡 全双工协议转换特性:</span>
+                      <p>
+                        即使您的下游供应商是仅支持 OpenAI 协议的私有 GPUStack 集群，客户端通过 Anthropic SDK 请求时，网关也会在内存零拷贝将 Claude Messages 双向转换为 OpenAI Completions 并在返回时转回 Anthropic 格式。
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {docsSection === 'multimodal' && (
+                  <div className="space-y-4">
+                    <div className="border-b border-slate-100 pb-3">
+                      <h3 className="text-base font-bold text-slate-900">多模态 API 接口规范</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">生图、语音合成 TTS、语音识别 STT、视频生成与轮询均通过统一熔断与分发管道提供。</p>
+                    </div>
+
+                    <div className="space-y-3 text-xs">
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                        <span className="font-bold text-pink-700">🎨 1. AI 图像生成 (/v1/images/generations)</span>
+                        <pre className="mt-1 font-mono text-slate-700">
+{`POST /v1/images/generations
+{"model": "dall-e-3", "prompt": "cyberpunk city, 8k", "size": "1024x1024"}`}
+                        </pre>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                        <span className="font-bold text-cyan-700">🔊 2. 语音合成 TTS (/v1/audio/speech)</span>
+                        <pre className="mt-1 font-mono text-slate-700">
+{`POST /v1/audio/speech
+{"model": "tts-1", "input": "你好世界", "voice": "alloy", "response_format": "mp3"}
+(返回二进制流式音频流，零内存占用直连客户端)`}
+                        </pre>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                        <span className="font-bold text-teal-700">🎙️ 3. Whisper 语音转录 (/v1/audio/transcriptions)</span>
+                        <pre className="mt-1 font-mono text-slate-700">
+{`POST /v1/audio/transcriptions (multipart/form-data)
+file=@recording.mp3; model=whisper-1`}
+                        </pre>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                        <span className="font-bold text-purple-700">🎬 4. 视频生成与轮询 (/v1/videos/generations & /v1/videos/tasks/:id)</span>
+                        <pre className="mt-1 font-mono text-slate-700">
+{`POST /v1/videos/generations -> 返回 {"task_id": "task_xxx", "status": "PENDING"}
+GET /v1/videos/tasks/:id    -> 轮询状态直到 SUCCESS 并返回 video_url`}
+                        </pre>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {docsSection === 'cascading' && (
+                  <div className="space-y-4">
+                    <div className="border-b border-slate-100 pb-3">
+                      <h3 className="text-base font-bold text-slate-900">级联模型别名与通配映射</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">不设任何斜杠深度限制，支持多组织层级命名与任意前缀重写。</p>
+                    </div>
+
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-3">
+                      <h4 className="font-bold text-slate-900">映射格式与示例:</h4>
+                      <ul className="list-disc pl-5 space-y-1.5 text-slate-700">
+                        <li>
+                          <strong>精确别名重写:</strong> <code>yy/xxx/xx:xxx/xx</code> <br />
+                          客户端请求 <code>yy/xxx/xx</code>，发往上游时自动零拷贝重写为 <code>xxx/xx</code>。
+                        </li>
+                        <li>
+                          <strong>前缀通配映射:</strong> <code>org/dept/*:*</code> <br />
+                          客户端请求 <code>org/dept/v1/deepseek-ai/DeepSeek-V3</code>，自动剥离前缀发往目标集群。
+                        </li>
+                        <li>
+                          <strong>服务商自动前缀:</strong> <code>&lt;ProviderName&gt;/&lt;Model&gt;</code> <br />
+                          当存在多个提供商均提供 <code>gpt-4o</code> 时，客户端可直接指定 <code>openai-us/gpt-4o</code> 精准定向路由！
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                )}
+
+                {docsSection === 'deploy' && (
+                  <div className="space-y-4">
+                    <div className="border-b border-slate-100 pb-3">
+                      <h3 className="text-base font-bold text-slate-900">生产环境高可用集群部署 (HA)</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">提供开箱即用的多副本 Docker Compose 与生产级 Kubernetes Helm Chart。</p>
+                    </div>
+
+                    <div className="space-y-3">
+                      <h4 className="text-xs font-bold text-slate-800">1. Docker Compose (2 副本 Gateway + Nginx 负载均衡):</h4>
+                      <pre className="p-3 bg-slate-900 text-slate-100 rounded-xl text-xs font-mono overflow-x-auto">
+docker compose up -d --build
+                      </pre>
+
+                      <h4 className="text-xs font-bold text-slate-800 pt-2">2. Kubernetes Helm 一键部署:</h4>
+                      <pre className="p-3 bg-slate-900 text-slate-100 rounded-xl text-xs font-mono overflow-x-auto">
+helm install nano-gateway ./helm/nano-gateway -n gateway --create-namespace
+                      </pre>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
-      {/* Modal: New Provider */}
+      {/* Modal: New Provider with Smart Auto-Probe */}
       {showChannelModal && (
         <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center p-4 z-50 backdrop-blur-xs">
           <form onSubmit={handleCreateChannel} className="bg-white border border-slate-200 rounded-2xl p-6 max-w-xl w-full space-y-4 shadow-2xl animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="font-bold text-lg text-slate-900">新建模型提供商 (Provider)</h3>
-                <p className="text-xs text-slate-500">统一接入上游模型服务，支持全模态协议选择与级联映射</p>
+                <p className="text-xs text-slate-500">统一接入上游模型服务，支持一键智能探测与全模态协议映射</p>
               </div>
               <button
                 type="button"
@@ -1769,65 +2241,43 @@ export default function App() {
               </div>
             </div>
 
+            {/* Probe Notification */}
+            {probeAlert && (
+              <div
+                className={`p-3 rounded-xl text-xs font-medium border ${
+                  probeAlert.type === 'success'
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                    : 'bg-rose-50 text-rose-800 border-rose-200'
+                }`}
+              >
+                {probeAlert.text}
+              </div>
+            )}
+
             <div className="space-y-3 text-sm pt-2">
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Provider 标识名称</label>
-                <input
-                  required
-                  value={newChannel.name}
-                  onChange={(e) => setNewChannel({ ...newChannel, name: e.target.value })}
-                  placeholder="例如: gpustack-cluster 或 sub2api-backup"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">厂商 / 引擎类别</label>
-                  <select
-                    value={newChannel.type}
-                    onChange={(e) => {
-                      const t = e.target.value;
-                      let defaultUrl = newChannel.base_url;
-                      if (t === 'gemini') defaultUrl = 'https://generativelanguage.googleapis.com';
-                      if (t === 'anthropic') defaultUrl = 'https://api.anthropic.com';
-                      if (t === 'sub2api') defaultUrl = 'https://your-sub2api.example.com/v1';
-                      if (t === 'gpustack') defaultUrl = 'http://gpustack.local/v1-openai';
-                      setNewChannel({ ...newChannel, type: t, base_url: defaultUrl });
-                    }}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="sub2api">sub2api (聚合接入)</option>
-                    <option value="gpustack">gpustack (私有化算力栈)</option>
-                    <option value="gemini">gemini (Google 专用协议)</option>
-                    <option value="anthropic">anthropic (Claude 原生协议)</option>
-                    <option value="openai">openai (OpenAI 标准协议)</option>
-                    <option value="deepseek">deepseek (深度求索)</option>
-                    <option value="vllm">vllm (本地推理引擎)</option>
-                    <option value="sglang">sglang (高性能推理引擎)</option>
-                    <option value="custom">custom (自定义下游适配器)</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">优先级 (1 为最高主源)</label>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">
+                  下游 Base URL (包含协议与端口)
+                </label>
+                <div className="flex space-x-2">
                   <input
-                    type="number"
-                    value={newChannel.priority}
-                    onChange={(e) => setNewChannel({ ...newChannel, priority: parseInt(e.target.value) || 1 })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500 font-mono"
+                    required
+                    value={newChannel.base_url}
+                    onChange={(e) => setNewChannel({ ...newChannel, base_url: e.target.value })}
+                    placeholder="http://192.168.1.100:80/v1-openai 或 https://api.openai.com/v1"
+                    className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500 font-mono text-xs"
                   />
+                  <button
+                    type="button"
+                    onClick={handleProbeChannel}
+                    disabled={probing}
+                    className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-sky-600 hover:from-indigo-700 hover:to-sky-700 text-white rounded-xl text-xs font-semibold flex items-center space-x-1.5 shadow-sm transition disabled:opacity-50 shrink-0"
+                  >
+                    {probing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                    <span>{probing ? '探测中...' : '智能探测'}</span>
+                  </button>
                 </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">下游 Base URL (包含协议与端口)</label>
-                <input
-                  required
-                  value={newChannel.base_url}
-                  onChange={(e) => setNewChannel({ ...newChannel, base_url: e.target.value })}
-                  placeholder="https://..."
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500 font-mono"
-                />
+                <span className="text-[11px] text-slate-400 mt-0.5 block">点击「智能探测」可自动读取上游格式、所有模型列表并勾选支持协议</span>
               </div>
 
               <div>
@@ -1841,6 +2291,58 @@ export default function App() {
                 />
               </div>
 
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Provider 标识名称</label>
+                  <input
+                    required
+                    value={newChannel.name}
+                    onChange={(e) => setNewChannel({ ...newChannel, name: e.target.value })}
+                    placeholder="gpustack-cluster"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">厂商 / 引擎类别</label>
+                  <select
+                    value={newChannel.type}
+                    onChange={(e) => setNewChannel({ ...newChannel, type: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="sub2api">sub2api (聚合接入)</option>
+                    <option value="gpustack">gpustack (私有化算力栈)</option>
+                    <option value="gemini">gemini (Google 专用协议)</option>
+                    <option value="anthropic">anthropic (Claude 原生协议)</option>
+                    <option value="openai">openai (OpenAI 标准协议)</option>
+                    <option value="deepseek">deepseek (深度求索)</option>
+                    <option value="vllm">vllm (本地推理引擎)</option>
+                    <option value="sglang">sglang (高性能推理引擎)</option>
+                    <option value="custom">custom (自定义下游适配器)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">优先级 (1 为最高主源)</label>
+                  <input
+                    type="number"
+                    value={newChannel.priority}
+                    onChange={(e) => setNewChannel({ ...newChannel, priority: parseInt(e.target.value) || 1 })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">权重 (同优先级下负载分担)</label>
+                  <input
+                    type="number"
+                    value={newChannel.weight}
+                    onChange={(e) => setNewChannel({ ...newChannel, weight: parseInt(e.target.value) || 10 })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">支持模型列表 (逗号分隔)</label>
                 <input
@@ -1848,7 +2350,7 @@ export default function App() {
                   value={newChannel.models_str}
                   onChange={(e) => setNewChannel({ ...newChannel, models_str: e.target.value })}
                   placeholder="gpt-4o, claude-3-5-sonnet, dall-e-3, tts-1, whisper-1"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500 font-mono text-xs"
                 />
               </div>
 
@@ -1862,7 +2364,6 @@ export default function App() {
                   placeholder="yy/xxx/xx:xxx/xx, dept/*:*"
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500 font-mono text-xs"
                 />
-                <span className="text-[11px] text-slate-400 mt-1 block">支持任意斜杠深度的级联映射与前缀通配重写</span>
               </div>
 
               {/* Supported Protocols selection */}

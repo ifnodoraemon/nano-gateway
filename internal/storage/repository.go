@@ -211,6 +211,33 @@ func (r *Repository) RecordUsageLog(log *UsageLogRecord) error {
 	return err
 }
 
+// ListUsageLogs returns recent usage logs for audit and monitoring.
+func (r *Repository) ListUsageLogs(limit int, offset int) ([]*UsageLogRecord, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := r.db.Query(`SELECT id, COALESCE(virtual_key, ''), COALESCE(tenant_id, ''), COALESCE(model, ''), COALESCE(channel, ''), prompt_tokens, completion_tokens, total_tokens, duration_ms, ttft_ms, status_code, created_at FROM usage_logs ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []*UsageLogRecord
+	for rows.Next() {
+		var l UsageLogRecord
+		var createdAt time.Time
+		if err := rows.Scan(&l.ID, &l.VirtualKey, &l.TenantID, &l.Model, &l.Channel, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.DurationMs, &l.TTFTMs, &l.StatusCode, &createdAt); err != nil {
+			return nil, err
+		}
+		l.CreatedAt = createdAt
+		logs = append(logs, &l)
+	}
+	return logs, nil
+}
+
 // GetStatsOverview queries summary metrics.
 func (r *Repository) GetStatsOverview() (*StatsOverview, error) {
 	stats := &StatsOverview{}

@@ -19,6 +19,7 @@ type AdminHandler struct {
 	repo       *storage.Repository
 	sync       *Synchronizer
 	dispatcher *router.Dispatcher
+	prober     *DownstreamProber
 }
 
 // NewAdminHandler creates an AdminHandler.
@@ -27,7 +28,25 @@ func NewAdminHandler(repo *storage.Repository, sync *Synchronizer, dispatcher *r
 		repo:       repo,
 		sync:       sync,
 		dispatcher: dispatcher,
+		prober:     NewDownstreamProber(nil),
 	}
+}
+
+// ProbeChannel handles automated downstream service detection and discovery.
+func (h *AdminHandler) ProbeChannel(c *gin.Context) {
+	var req ProbeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	result, err := h.prober.Probe(c.Request.Context(), &req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": result})
 }
 
 // ListChannels returns all configured channels.
@@ -267,4 +286,19 @@ func (h *AdminHandler) GetStatsOverview(c *gin.Context) {
 func (h *AdminHandler) ListModels(c *gin.Context) {
 	models := h.dispatcher.GetAllSupportedModels()
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": models})
+}
+
+// ListLogs returns recent audit usage logs.
+func (h *AdminHandler) ListLogs(c *gin.Context) {
+	limitStr := c.DefaultQuery("limit", "50")
+	limit, _ := strconv.Atoi(limitStr)
+	logs, err := h.repo.ListUsageLogs(limit, 0)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if logs == nil {
+		logs = make([]*storage.UsageLogRecord, 0)
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": logs})
 }

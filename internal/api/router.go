@@ -34,6 +34,7 @@ func SetupRouter(dispatcher *router.Dispatcher, adminHandler *controlplane.Admin
 			admin.PUT("/channels/:id", adminHandler.UpdateChannel)
 			admin.DELETE("/channels/:id", adminHandler.DeleteChannel)
 			admin.POST("/channels/:id/test", adminHandler.TestChannel)
+			admin.POST("/channels/probe", adminHandler.ProbeChannel)
 
 			admin.GET("/keys", adminHandler.ListVirtualKeys)
 			admin.POST("/keys", adminHandler.CreateVirtualKey)
@@ -41,6 +42,7 @@ func SetupRouter(dispatcher *router.Dispatcher, adminHandler *controlplane.Admin
 
 			admin.GET("/stats/overview", adminHandler.GetStatsOverview)
 			admin.GET("/models", adminHandler.ListModels)
+			admin.GET("/logs", adminHandler.ListLogs)
 		}
 	}
 
